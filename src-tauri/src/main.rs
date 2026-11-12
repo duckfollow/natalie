@@ -1,5 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod updates;
+
 use serde::{Deserialize, Serialize};
 use std::{
     path::Path,
@@ -34,6 +36,7 @@ struct Reference {
 struct Snapshot {
     root: String,
     branch: String,
+    head: Option<String>,
     changes: Vec<Change>,
     commits: Vec<Commit>,
     branches: Vec<Reference>,
@@ -89,9 +92,9 @@ fn snapshot(folder: &Path) -> Result<Snapshot, String> {
     let root = git(folder, &["rev-parse", "--show-toplevel"])?;
     let root = root.trim_end_matches('\n').to_owned();
     let path = Path::new(&root);
-    let has_head = run(path, &["rev-parse", "--verify", "HEAD"])?
-        .status
-        .success();
+    let head = git(path, &["rev-parse", "--verify", "HEAD"])
+        .ok()
+        .map(|hash| hash.trim_end().to_owned());
     let branch = git(path, &["symbolic-ref", "--quiet", "--short", "HEAD"])
         .map(|name| name.trim_end().to_owned())
         .unwrap_or_else(|_| "Detached HEAD".to_owned());
@@ -137,7 +140,7 @@ fn snapshot(folder: &Path) -> Result<Snapshot, String> {
         })
         .collect::<Result<Vec<_>, String>>()?;
     let mut commits = Vec::new();
-    if has_head {
+    if head.is_some() {
         let log = git(
             path,
             &[
@@ -212,6 +215,7 @@ fn snapshot(folder: &Path) -> Result<Snapshot, String> {
     Ok(Snapshot {
         root,
         branch,
+        head,
         changes,
         commits,
         branches,
@@ -268,6 +272,11 @@ enum Action {
     CherryPick {
         hash: String,
         mainline: Option<usize>,
+    },
+    ResetSoft {
+        hash: String,
+        branch: String,
+        head: String,
     },
     ContinueCherryPick,
     AbortCherryPick,
@@ -458,6 +467,22 @@ fn perform(root: Option<String>, action: Action) -> Result<Response, String> {
                     args.extend(["--", &hash]);
                     git(root, &args)?;
                 }
+                Action::ResetSoft { hash, branch, head } => {
+                    if !matches!(hash.len(), 40 | 64)
+                        || !hash.bytes().all(|b| b.is_ascii_hexdigit())
+                    {
+                        return Err("Invalid commit hash.".into());
+                    }
+                    let current_branch = git(root, &["symbolic-ref", "--quiet", "--short", "HEAD"])
+                        .map_err(|_| "Check out a branch before resetting.")?;
+                    let current_head = git(root, &["rev-parse", "--verify", "HEAD"])?;
+                    if current_branch.trim_end() != branch || current_head.trim_end() != head {
+                        return Err(
+                            "The current branch or HEAD changed. Refresh and try again.".into()
+                        );
+                    }
+                    git(root, &["reset", "--soft", &hash, "--"])?;
+                }
                 Action::ContinueCherryPick => {
                     git(root, &["cherry-pick", "--continue"])?;
                 }
@@ -481,7 +506,11 @@ async fn repository(root: Option<String>, action: Action) -> Result<Response, St
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![repository])
+        .invoke_handler(tauri::generate_handler![
+            repository,
+            updates::check_for_updates,
+            updates::open_release_page
+        ])
         .run(tauri::generate_context!())
         .expect("Natalie could not start");
 }
@@ -614,6 +643,28 @@ mod tests {
             panic!("Expected commit details");
         };
         assert!(details.contains("+first line"));
+        let folder_root = Some(committed.root.clone());
+        std::fs::write(folder.join("a [literal].txt"), "second line\n").unwrap();
+        git(folder, &["add", "--", "a [literal].txt"]).unwrap();
+        git(folder, &["commit", "-m", "Second commit"]).unwrap();
+        let before_reset = snapshot(folder).unwrap();
+        std::fs::write(folder.join("a [literal].txt"), "unstaged edit\n").unwrap();
+        let Response::Snapshot(reset) = perform(
+            folder_root,
+            Action::ResetSoft {
+                hash: committed.head.clone().unwrap(),
+                branch: before_reset.branch,
+                head: before_reset.head.unwrap(),
+            },
+        )
+        .unwrap() else {
+            panic!("Expected repository snapshot");
+        };
+        assert_eq!(reset.head, committed.head);
+        assert!(git(folder, &["diff", "--cached"])
+            .unwrap()
+            .contains("+second line"));
+        assert!(git(folder, &["diff"]).unwrap().contains("+unstaged edit"));
         std::fs::write(folder.join("draft.txt"), "untracked draft").unwrap();
         let Response::Snapshot(stashed) = perform(
             Some(committed.root),

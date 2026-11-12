@@ -21,15 +21,27 @@ function Section({
   icon,
   children,
   open = false,
+  onExpand,
 }: {
   label: string;
   icon: ReactNode;
   children: ReactNode;
   open?: boolean;
+  onExpand?: () => void;
 }) {
   return (
     <details className="repo-nav-section" open={open}>
-      <summary>
+      <summary
+        title={label}
+        aria-label={label}
+        onClick={(event) => {
+          if (!onExpand) return;
+          event.preventDefault();
+          const section = event.currentTarget.parentElement as HTMLDetailsElement;
+          section.open = true;
+          onExpand();
+        }}
+      >
         {icon}
         <span>{label}</span>
         <ChevronRight size={13} />
@@ -41,7 +53,8 @@ function Section({
 
 export function RepositorySidebar({
   view,
-  hidden,
+  collapsed,
+  onExpand,
   branch,
   branches,
   tags,
@@ -52,7 +65,8 @@ export function RepositorySidebar({
   onCommit,
 }: {
   view: WorkspaceView;
-  hidden: boolean;
+  collapsed: boolean;
+  onExpand: () => void;
   branch: string;
   branches: Reference[];
   tags: Reference[];
@@ -81,13 +95,13 @@ export function RepositorySidebar({
       <span className="repo-reference-name">{label}</span>
     </button>
   );
+  const expandSection = collapsed ? onExpand : undefined;
   return (
     <aside
       id="repository-navigation"
-      hidden={hidden}
       className="repo-navigation"
       aria-label="Repository navigation"
-      tabIndex={hidden ? -1 : 0}
+      tabIndex={0}
     >
       <div className="repo-nav-section">
         <h2>
@@ -96,25 +110,31 @@ export function RepositorySidebar({
         <div className="repo-nav-items" role="group" aria-label="Workspace">
           <button
             aria-pressed={view === "changes"}
+            aria-label="File status"
+            title="File status"
             onClick={() => onView("changes")}
           >
-            <FileDiff size={14} /> File status
+            <FileDiff size={14} aria-hidden="true" /> <span>File status</span>
           </button>
           <button
             aria-pressed={view === "history"}
+            aria-label="History"
+            title="History"
             onClick={() => onView("history")}
           >
-            <History size={14} /> History
+            <History size={14} aria-hidden="true" /> <span>History</span>
           </button>
           <button
             aria-pressed={view === "search"}
+            aria-label="Search"
+            title="Search"
             onClick={() => onView("search")}
           >
-            <Search size={14} /> Search
+            <Search size={14} aria-hidden="true" /> <span>Search</span>
           </button>
         </div>
       </div>
-      <Section label="Branches" icon={<GitBranch size={15} />} open>
+      <Section onExpand={expandSection} label="Branches" icon={<GitBranch size={15} />} open>
         {!branches.length && <small>No branches yet</small>}
         {(groups.get("") ?? []).map((ref) =>
           refButton(ref, ref.name, ref.name === branch),
@@ -142,28 +162,28 @@ export function RepositorySidebar({
             </details>
           ))}
       </Section>
-      <Section label="Tags" icon={<Tag size={15} />}>
+      <Section onExpand={expandSection} label="Tags" icon={<Tag size={15} />}>
         {tags.length ? (
           tags.map((ref) => refButton(ref))
         ) : (
           <small>No tags</small>
         )}
       </Section>
-      <Section label="Remotes" icon={<Cloud size={15} />}>
+      <Section onExpand={expandSection} label="Remotes" icon={<Cloud size={15} />}>
         {remotes.length ? (
           remotes.map((name) => <span key={name}>{name}</span>)
         ) : (
           <small>No remotes</small>
         )}
       </Section>
-      <Section label="Stashes" icon={<Layers3 size={15} />}>
+      <Section onExpand={expandSection} label="Stashes" icon={<Layers3 size={15} />}>
         {stashes.length ? (
           stashes.map((ref) => refButton(ref))
         ) : (
           <small>No stashes</small>
         )}
       </Section>
-      <Section label="Submodules" icon={<Package size={15} />}>
+      <Section onExpand={expandSection} label="Submodules" icon={<Package size={15} />}>
         {submodules.length ? (
           submodules.map((name) => <span key={name}>{name}</span>)
         ) : (

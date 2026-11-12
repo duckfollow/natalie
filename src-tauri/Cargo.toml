@@ -10,3 +10,6 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
+semver = "1"
+serde_json = "1"

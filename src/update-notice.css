@@ -1,0 +1,107 @@
+.app-updates {
+  flex: none;
+}
+.update-nav-button,
+.updates-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+.update-nav-button {
+  height: var(--header-control-height);
+  padding: 0 8px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.update-nav-version {
+  color: var(--muted);
+  font-size: 10px;
+}
+.update-new-badge {
+  color: var(--accent);
+  font-size: 10px;
+}
+.updates-dialog {
+  width: min(580px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--text);
+}
+.updates-dialog::backdrop {
+  background: var(--backdrop);
+}
+.updates-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--line);
+}
+.updates-heading h2,
+.updates-hero h3,
+.updates-notes h3 {
+  margin: 0;
+}
+.updates-body {
+  display: grid;
+  gap: 16px;
+  padding: 20px;
+}
+.updates-hero,
+.updates-notes {
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+.updates-hero,
+.updates-toolbar,
+.updates-notes h3 {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+.updates-toolbar {
+  justify-content: flex-end;
+}
+.updates-hero p,
+.updates-instructions,
+.updates-error {
+  margin: 0;
+  font-size: 12px;
+}
+.updates-hero p,
+.updates-channel,
+.updates-instructions {
+  color: var(--muted);
+}
+.updates-channel {
+  margin-inline-start: auto;
+  font-size: 11px;
+}
+.updates-error {
+  color: var(--error);
+}
+.updates-notes pre {
+  max-height: 200px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+  font-size: 12px;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .update-spinning {
+    animation: update-spin 1s linear infinite;
+  }
+}
+@keyframes update-spin {
+  to { transform: rotate(360deg); }
+}

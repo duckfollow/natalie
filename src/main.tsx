@@ -9,7 +9,6 @@ import {
   FolderOpen,
   GitBranch,
   GitCommitHorizontal,
-  GitMerge,
   GitPullRequestArrow,
   History,
   Layers3,
@@ -23,8 +22,8 @@ import {
   Monitor,
   PanelLeft,
   List,
-  PanelTop,
 } from "lucide-react";
+import type { CSSProperties } from "react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
@@ -38,6 +37,7 @@ import {
 } from "./RepositorySidebar";
 import { RepositoryPicker } from "./RepositoryPicker";
 import { CherryPickDialog } from "./CherryPickDialog";
+import { UpdateNotice } from "./UpdateNotice";
 import { GitToolbar } from "./GitToolbar";
 import "./style.css";
 
@@ -45,6 +45,7 @@ type Change = { path: string; index: string; worktree: string };
 type Snapshot = {
   root: string;
   branch: string;
+  head: string | null;
   changes: Change[];
   commits: Commit[];
   branches: Reference[];
@@ -82,9 +83,10 @@ const lightLaneColors = [
   "#775719",
   "#3e702c",
 ];
-const laneStep = 18;
+const laneStep = 28;
+const lanePadding = 17;
 const halfRow = 38;
-const laneX = (lane: number) => 13 + lane * laneStep;
+const laneX = (lane: number) => lanePadding + lane * laneStep;
 
 function CommitGraphRow({
   row,
@@ -98,8 +100,7 @@ function CommitGraphRow({
   theme: "light" | "dark";
 }) {
   const colors = theme === "light" ? lightLaneColors : laneColors;
-  const canvas = useRef<HTMLCanvasElement>(null);
-  const graphWidth = laneX(width - 1) + 13;
+  const graphWidth = laneX(width - 1) + lanePadding;
   const initials = author
     .trim()
     .split(/\s+/)
@@ -108,45 +109,39 @@ function CommitGraphRow({
     .join("")
     .toLocaleUpperCase();
 
-  useLayoutEffect(() => {
-    const element = canvas.current;
-    const context = element?.getContext("2d");
-    if (!element || !context) return;
-    const scale = window.devicePixelRatio || 1;
-    element.width = Math.ceil(graphWidth * scale);
-    element.height = Math.ceil(halfRow * 2 * scale);
-    context.scale(scale, scale);
-    context.lineJoin = "round";
-    for (const edge of row.edges) {
-      const from = laneX(edge.from);
-      const to = laneX(edge.to);
-      const start = edge.part === "top" ? 0 : halfRow;
-      const end = start + halfRow;
-      context.lineWidth = edge.merge ? 2.6 : 1.6;
-      context.strokeStyle = colors[edge.color % colors.length];
-      context.beginPath();
-      context.moveTo(from, start);
-      if (from !== to) {
-        const bend = start + halfRow / 2;
-        const step = Math.sign(to - from);
-        const radius = 6;
-        context.lineTo(from, bend - radius);
-        context.quadraticCurveTo(from, bend, from + radius * step, bend);
-        context.lineTo(to - radius * step, bend);
-        context.quadraticCurveTo(to, bend, to, bend + radius);
-      }
-      context.lineTo(to, end);
-      context.stroke();
-    }
-  }, [colors, graphWidth, row]);
-
   return (
     <span
       className="commit-graph"
       aria-hidden="true"
       style={{ width: graphWidth, height: halfRow * 2 }}
     >
-      <canvas ref={canvas} />
+      <svg width={graphWidth} height={halfRow * 2} fill="none" strokeLinejoin="round">
+        {row.edges.map((edge, index) => {
+          const from = laneX(edge.from);
+          const to = laneX(edge.to);
+          const start = edge.part === "top" ? 0 : halfRow;
+          const end = start + halfRow;
+          let path = `M ${from} ${start} V ${end}`;
+          if (from !== to) {
+            const bend = start + halfRow / 2;
+            const offset = 6 * Math.sign(to - from);
+            path = [
+              `M ${from} ${start} V ${bend - 6}`,
+              `Q ${from} ${bend} ${from + offset} ${bend}`,
+              `H ${to - offset}`,
+              `Q ${to} ${bend} ${to} ${bend + 6} V ${end}`,
+            ].join(" ");
+          }
+          return (
+            <path
+              key={index}
+              d={path}
+              stroke={colors[edge.color % colors.length]}
+              strokeWidth={edge.merge ? 2.6 : 1.6}
+            />
+          );
+        })}
+      </svg>
       <span
         className={`commit-dot${row.isMerge ? " commit-dot-merge" : ""}`}
         style={{
@@ -154,7 +149,7 @@ function CommitGraphRow({
           background: colors[row.color % colors.length],
         }}
       >
-        {row.isMerge ? <GitMerge size={12} strokeWidth={2.5} /> : initials}
+        {row.isMerge ? null : initials}
       </span>
     </span>
   );
@@ -291,6 +286,7 @@ function readRecentRepositories(): string[] {
 
 type Theme = "light" | "dark";
 type Appearance = Theme | "system";
+const sidebarCollapsedKey = "natalie.sidebarCollapsed";
 const appearanceKey = "natalie.appearance";
 
 function readAppearance(): Appearance {
@@ -333,14 +329,61 @@ function App() {
     }
   }, [recent]);
   const [repo, setRepo] = useState<Snapshot | null>(null);
-  const [panels, setPanels] = useState({
-    navigation: true,
-    list: true,
-    toolbar: true,
+  const [panels, setPanels] = useState(() => {
+    let navigation = true;
+    try {
+      navigation = localStorage.getItem(sidebarCollapsedKey) !== "true";
+    } catch {
+      // Start with the sidebar open when storage is unavailable.
+    }
+    return { navigation, list: true };
   });
+  useEffect(() => {
+    try {
+      localStorage.setItem(sidebarCollapsedKey, String(!panels.navigation));
+    } catch {
+      // The choice still applies for this session.
+    }
+  }, [panels.navigation]);
+  const listPanel = useRef<HTMLElement>(null);
+  const diffPanel = useRef<HTMLElement>(null);
+  const resizeStart = useRef({ x: 0, width: 0 });
+  const [listWidth, setListWidth] = useState<number>();
+  const [resizingDiff, setResizingDiff] = useState(false);
+
+  function constrainListWidth(width: number) {
+    const list = listPanel.current;
+    const diff = diffPanel.current;
+    if (!list || !diff) return width;
+    const maxWidth = list.offsetWidth + diff.offsetWidth - 280;
+    return Math.max(180, Math.min(width, maxWidth));
+  }
+
   const [view, setView] = useState<WorkspaceView>("changes");
   const [search, setSearch] = useState("");
   const [cherryPick, setCherryPick] = useState<Commit | null>(null);
+  useEffect(() => {
+    if (!repo || picker || cherryPick) return;
+    function handleSidebarShortcut(event: KeyboardEvent) {
+      if (
+        !event.metaKey ||
+        event.ctrlKey ||
+        event.altKey ||
+        event.shiftKey ||
+        event.key.toLowerCase() !== "b" ||
+        event.defaultPrevented
+      ) return;
+      event.preventDefault();
+      if (!event.repeat) toggleSidebar();
+    }
+    window.addEventListener("keydown", handleSidebarShortcut);
+    return () => window.removeEventListener("keydown", handleSidebarShortcut);
+  }, [repo, picker, cherryPick]);
+
+  function toggleSidebar() {
+    setPanels((current) => ({ ...current, navigation: !current.navigation }));
+  }
+
   const [selection, setSelection] = useState<Selection | null>(null);
   const [diff, setDiff] = useState("");
   const [loadingDiff, setLoadingDiff] = useState(false);
@@ -469,7 +512,11 @@ function App() {
     return (
       <section className="change-group" aria-label={title}>
         <h2>
-          {inIndex ? <Layers3 size={14} /> : <FileDiff size={14} />}
+          {inIndex ? (
+            <Layers3 size={14} aria-hidden="true" />
+          ) : (
+            <FileDiff size={14} aria-hidden="true" />
+          )}
           {title} <span>{items.length}</span>
         </h2>
         {!items.length && (
@@ -481,6 +528,9 @@ function App() {
             selection.path === item.path &&
             selection.staged === inIndex;
           const code = inIndex ? item.index : item.worktree;
+          const separator = item.path.lastIndexOf("/");
+          const name = item.path.slice(separator + 1);
+          const directory = item.path.slice(0, separator);
           return (
             <div
               className={`file-row${selected ? " selected" : ""}`}
@@ -488,7 +538,9 @@ function App() {
             >
               <button
                 className="file-name"
+                type="button"
                 title={item.path}
+                aria-pressed={selected}
                 onClick={() =>
                   setSelection({
                     kind: "diff",
@@ -499,7 +551,12 @@ function App() {
                 }
               >
                 <FileText size={14} aria-hidden="true" />
-                <span className="file-path">{item.path}</span>
+                <span className="file-path">
+                  <span className="file-basename">{name}</span>
+                  {separator >= 0 && (
+                    <span className="file-directory">{directory}/</span>
+                  )}
+                </span>
                 <span
                   className={`status status-${code === "?" ? "new" : code}`}
                 >
@@ -508,6 +565,7 @@ function App() {
               </button>
               <button
                 className="file-action discard-action"
+                type="button"
                 disabled={busy || repo?.submodules.includes(item.path)}
                 aria-label={`Discard changes in ${item.path}`}
                 title="Discard all changes in this file"
@@ -529,7 +587,8 @@ function App() {
                 <Undo2 size={14} aria-hidden="true" />
               </button>
               <button
-                className="file-action"
+                className="file-action stage-action"
+                type="button"
                 disabled={busy}
                 aria-label={`${inIndex ? "Unstage" : "Stage"} ${item.path}`}
                 title={inIndex ? "Unstage" : "Stage"}
@@ -591,6 +650,7 @@ function App() {
           </div>
         )}
         <div className="header-actions">
+          <UpdateNotice />
           <div
             className="appearance-control"
             role="group"
@@ -615,14 +675,17 @@ function App() {
               </button>
             ))}
           </div>
-          <button disabled={busy} onClick={() => showPicker("repositories")}>
+          <button className="header-secondary" disabled={busy} onClick={() => showPicker("repositories")}>
             <FolderGit2 size={15} aria-hidden="true" /> Repositories
           </button>
-          <button disabled={busy} onClick={() => showPicker("clone")}>
+          <button className="header-secondary" disabled={busy} onClick={() => showPicker("clone")}>
             <Download size={15} aria-hidden="true" /> Clone
           </button>
           {root && (
             <button
+              className="header-secondary header-refresh"
+              title="Refresh repository"
+              aria-label="Refresh repository"
               disabled={busy}
               onClick={() =>
                 void update(() =>
@@ -630,7 +693,7 @@ function App() {
                 )
               }
             >
-              <RefreshCw size={14} aria-hidden="true" /> Refresh
+              <RefreshCw size={15} aria-hidden="true" />
             </button>
           )}
           <button
@@ -644,7 +707,19 @@ function App() {
       </header>
       {repo && (
         <div className="workspace-strip">
-          <div id="workspace-git-actions" hidden={!panels.toolbar}>
+          <button
+            className="sidebar-toggle"
+            type="button"
+            aria-label={panels.navigation ? "Collapse sidebar" : "Expand sidebar"}
+            aria-controls="repository-navigation"
+            aria-expanded={panels.navigation}
+            aria-keyshortcuts="Meta+B"
+            title={`${panels.navigation ? "Collapse" : "Expand"} sidebar (⌘ B)`}
+            onClick={toggleSidebar}
+          >
+            <PanelLeft size={18} aria-hidden="true" />
+          </button>
+          <div id="workspace-git-actions">
             <GitToolbar
               busy={busy}
               branches={repo.branches.map(({ name }) => name)}
@@ -680,32 +755,18 @@ function App() {
             role="group"
             aria-label="Workspace layout"
           >
-            {(
-              [
-                [
-                  "navigation",
-                  "Navigation",
-                  PanelLeft,
-                  "repository-navigation",
-                ],
-                ["list", "File and commit list", List, "workspace-list"],
-                ["toolbar", "Git actions", PanelTop, "workspace-git-actions"],
-              ] as const
-            ).map(([key, label, Icon, target]) => (
-              <button
-                key={key}
-                type="button"
-                title={`${panels[key] ? "Hide" : "Show"} ${label}`}
-                aria-label={label}
-                aria-controls={target}
-                aria-expanded={panels[key]}
-                onClick={() =>
-                  setPanels((current) => ({ ...current, [key]: !current[key] }))
-                }
-              >
-                <Icon size={15} aria-hidden="true" />
-              </button>
-            ))}
+            <button
+              type="button"
+              title={`${panels.list ? "Hide" : "Show"} File and commit list`}
+              aria-label="File and commit list"
+              aria-controls="workspace-list"
+              aria-expanded={panels.list}
+              onClick={() =>
+                setPanels((current) => ({ ...current, list: !current.list }))
+              }
+            >
+              <List size={15} aria-hidden="true" />
+            </button>
           </div>
         </div>
       )}
@@ -772,12 +833,15 @@ function App() {
       ) : (
         <div
           className="workspace"
-          data-navigation={panels.navigation ? "open" : "closed"}
+          data-navigation={panels.navigation ? "open" : "collapsed"}
           data-list={panels.list ? "open" : "closed"}
+          data-resizing-diff={resizingDiff}
+          style={listWidth == null ? undefined : { "--preferred-list-width": `${listWidth}px` } as CSSProperties}
         >
           <RepositorySidebar
             {...repo}
-            hidden={!panels.navigation}
+            collapsed={!panels.navigation}
+            onExpand={toggleSidebar}
             view={view}
             onView={(next) => {
               setView(next);
@@ -792,6 +856,7 @@ function App() {
           <aside
             className="workspace-list"
             id="workspace-list"
+            ref={listPanel}
             hidden={!panels.list}
             aria-label={view === "changes" ? "Changed files" : "Commits"}
           >
@@ -824,7 +889,7 @@ function App() {
             )}
             {view === "changes" ? (
               <>
-                <div className="sidebar-scroll">
+                <div className="sidebar-scroll file-status-list">
                   {changeGroup("Unstaged", unstaged, false)}
                   {changeGroup("Staged", staged, true)}
                 </div>
@@ -894,7 +959,7 @@ function App() {
                       }
                       style={
                         view === "history"
-                          ? { minWidth: laneX(graph.width - 1) + 135 }
+                          ? { minWidth: laneX(graph.width - 1) + lanePadding + 122 }
                           : undefined
                       }
                       onClick={() =>
@@ -911,7 +976,7 @@ function App() {
                       )}
                       <span className="commit-details">
                         <span className="commit-title">
-                          <strong title={commit.subject}>
+                          <strong title={view === "search" ? commit.subject : undefined}>
                             {commit.subject || "Untitled commit"}
                           </strong>
                           {graph.rows[index].isMerge && (
@@ -951,7 +1016,42 @@ function App() {
               </div>
             )}
           </aside>
-          <section className="diff-panel" aria-label="Diff">
+          {panels.list && (
+            <div
+              className="diff-resize-handle"
+              role="separator"
+              aria-label="Resize Diff"
+              aria-orientation="vertical"
+              aria-controls="workspace-list"
+              tabIndex={0}
+              onPointerDown={(event) => {
+                if (!event.isPrimary || event.button !== 0 || !listPanel.current) return;
+                event.preventDefault();
+                resizeStart.current = {
+                  x: event.clientX,
+                  width: listPanel.current.offsetWidth,
+                };
+                event.currentTarget.setPointerCapture(event.pointerId);
+                setResizingDiff(true);
+              }}
+              onPointerMove={(event) => {
+                if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
+                const { x, width } = resizeStart.current;
+                setListWidth(constrainListWidth(width + event.clientX - x));
+              }}
+              onLostPointerCapture={() => setResizingDiff(false)}
+              onDragStart={(event) => event.preventDefault()}
+              onKeyDown={(event) => {
+                if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+                event.preventDefault();
+                const width = listPanel.current?.offsetWidth;
+                if (width != null) {
+                  setListWidth(constrainListWidth(width + (event.key === "ArrowLeft" ? -20 : 20)));
+                }
+              }}
+            />
+          )}
+          <section className="diff-panel" aria-label="Diff" ref={diffPanel}>
             <header>
               {selection?.kind === "show" ? (
                 <GitCommitHorizontal size={16} aria-hidden="true" />
@@ -971,15 +1071,42 @@ function App() {
                 </span>
               )}
               {selectedCommit && repo.branch !== "Detached HEAD" && (
-                <button
-                  className="diff-cherry-pick"
-                  type="button"
-                  disabled={busy || repo.cherry_picking}
-                  onClick={() => setCherryPick(selectedCommit)}
-                >
-                  <GitPullRequestArrow size={14} aria-hidden="true" />{" "}
-                  Cherry-pick
-                </button>
+                <div className="diff-commit-actions">
+                  <button
+                    type="button"
+                    disabled={busy || repo.cherry_picking}
+                    onClick={() => setCherryPick(selectedCommit)}
+                  >
+                    <GitPullRequestArrow size={14} aria-hidden="true" />
+                    Cherry-pick
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busy || repo.cherry_picking || !repo.head || repo.head === selectedCommit.hash}
+                    onClick={() => {
+                      const { branch, head } = repo;
+                      if (!head) return;
+                      const { hash, subject } = selectedCommit;
+                      void update(async () => {
+                        const approved = await confirm(
+                          `Move ${branch} to ${hash.slice(0, 7)} · ${subject}? The index and working tree stay as they are. This changes the local branch history.`,
+                          { title: "Reset (Soft)", kind: "warning", okLabel: "Reset (Soft)", cancelLabel: "Cancel" },
+                        );
+                        return approved
+                          ? repository<Snapshot>(root, { kind: "reset_soft", hash, branch, head })
+                          : null;
+                      }, () => {
+                        setView("changes");
+                        setPanels((current) => ({ ...current, list: true }));
+                        setSelection(null);
+                        setNotice("Soft reset completed.");
+                      });
+                    }}
+                  >
+                    <Undo2 size={14} aria-hidden="true" />
+                    Reset (Soft)
+                  </button>
+                </div>
               )}
             </header>
             {loadingDiff ? (

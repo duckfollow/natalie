@@ -72,12 +72,13 @@ export function RepositorySidebar({
     <button
       type="button"
       key={ref.name}
-      className={current ? "current-branch" : undefined}
+      className={`repo-reference${current ? " current-branch" : ""}`}
+      aria-label={ref.name}
       title={ref.name}
       aria-current={current ? "true" : undefined}
       onClick={() => onCommit(ref.hash)}
     >
-      {label}
+      <span className="repo-reference-name">{label}</span>
     </button>
   );
   return (
@@ -86,6 +87,7 @@ export function RepositorySidebar({
       hidden={hidden}
       className="repo-navigation"
       aria-label="Repository navigation"
+      tabIndex={hidden ? -1 : 0}
     >
       <div className="repo-nav-section">
         <h2>
@@ -125,10 +127,10 @@ export function RepositorySidebar({
               key={group}
               open={refs.some((ref) => ref.name === branch)}
             >
-              <summary>
+              <summary title={group}>
                 <ChevronRight size={12} />
                 <Folder size={14} />
-                {group}
+                <span className="repo-reference-name">{group}</span>
               </summary>
               {refs.map((ref) =>
                 refButton(

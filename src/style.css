@@ -294,7 +294,54 @@ nav span,
   border-radius: 6px;
 }
 .history {
-  padding: 8px;
+  padding: 0 6px 12px;
+  scrollbar-width: none;
+}
+.history::-webkit-scrollbar {
+  display: none;
+}
+.history:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.history-context {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--line);
+  font-size: 11px;
+  color: var(--muted);
+}
+.history-context svg {
+  flex: none;
+  color: var(--accent);
+}
+.history-context > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.history-context small {
+  margin-inline-start: auto;
+  flex: none;
+  font-size: 10px;
+}
+.workspace-list-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.history-count {
+  margin-inline-start: auto;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--count-background);
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 500;
 }
 .history button {
   display: flex;
@@ -302,8 +349,8 @@ nav span,
   gap: 6px;
   width: 100%;
   min-width: 0;
-  height: 68px;
-  padding: 0 8px 0 0;
+  height: 76px;
+  padding: 0 10px 0 0;
   text-align: left;
   border: 0;
 }
@@ -478,7 +525,22 @@ nav button,
 .header-actions > button,
 .header-actions > .appearance-control {
   height: var(--header-control-height);
+  min-height: var(--header-control-height);
+  max-height: var(--header-control-height);
   flex-shrink: 0;
+}
+.header-actions button {
+  -webkit-appearance: none;
+  appearance: none;
+  background-clip: padding-box;
+}
+.header-actions > .primary {
+  border-color: var(--line);
+}
+.header-actions > button {
+  padding-block: 0;
+  line-height: 1;
+  white-space: nowrap;
 }
 .repo-context .branch-pill {
   display: inline-flex;
@@ -829,11 +891,22 @@ nav button[aria-pressed="true"] {
 }
 .repo-navigation {
   display: block;
-  overflow: auto;
+  min-width: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: none;
   padding: 10px 8px;
   background: var(--navigation);
 }
+.repo-navigation::-webkit-scrollbar {
+  display: none;
+}
+.repo-navigation:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
 .repo-nav-section {
+  min-width: 0;
   margin-bottom: 10px;
 }
 .repo-nav-section h2,
@@ -863,7 +936,27 @@ nav button[aria-pressed="true"] {
 }
 .repo-nav-items {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 2px;
+}
+.repo-branch-folder {
+  min-width: 0;
+}
+.repo-nav-items .repo-reference,
+.repo-branch-folder summary {
+  min-width: 0;
+  height: 30px;
+  white-space: nowrap;
+}
+.repo-reference-name {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.repo-branch-folder summary svg {
+  flex-shrink: 0;
 }
 .repo-nav-items button,
 .repo-nav-items > span,
@@ -884,6 +977,7 @@ nav button[aria-pressed="true"] {
   color: var(--accent);
 }
 .repo-nav-items .current-branch {
+  background: var(--active);
   color: var(--accent);
   font-weight: 700;
 }
@@ -937,11 +1031,12 @@ nav button[aria-pressed="true"] {
   position: relative;
   color: var(--accent);
 }
-.git-toolbar-icon small {
-  position: absolute;
-  inset: -6px auto auto 13px;
-  padding: 1px 4px;
-  border-radius: 5px;
+.git-toolbar-count {
+  min-width: 18px;
+  padding: 2px 5px;
+  border-radius: 999px;
+  text-align: center;
+  line-height: 1.2;
   background: var(--accent);
   color: var(--primary-text);
   font-size: 9px;
@@ -1133,4 +1228,55 @@ nav button[aria-pressed="true"] {
 }
 .diff-file summary:hover {
   background: var(--active);
+}
+
+.discard-action:hover:not(:disabled) {
+  color: var(--error);
+}
+
+.history button {
+  background: transparent;
+  border-radius: 0;
+  box-shadow: inset 0 -1px color-mix(in srgb, var(--line) 55%, transparent);
+}
+.history button:hover:not(:disabled) {
+  background: var(--active);
+}
+.history button.selected {
+  background: color-mix(in srgb, var(--accent) 13%, var(--panel));
+  box-shadow: inset 3px 0 var(--accent), inset 0 -1px var(--line);
+}
+.history-search button {
+  padding-inline-start: 10px;
+}
+.history strong {
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+.commit-title strong {
+  min-width: 0;
+}
+.commit-title .merge-badge {
+  flex: none;
+}
+.commit-meta {
+  font-size: 10px;
+  line-height: 1.4;
+}
+.commit-meta code {
+  margin-inline-start: auto;
+  opacity: 0.85;
+}
+.commit-meta time {
+  margin-inline-start: 0;
+  font-size: 9px;
+}
+.commit-ref-list {
+  max-height: 18px;
+}
+.commit-ref {
+  flex: 0 1 auto;
+  max-width: 100%;
+  border: 1px solid color-mix(in srgb, var(--accent) 20%, transparent);
 }

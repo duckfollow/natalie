@@ -42,6 +42,8 @@ struct Snapshot {
     stashes: Vec<Reference>,
     submodules: Vec<String>,
     cherry_picking: bool,
+    ahead: Option<usize>,
+    behind: Option<usize>,
 }
 
 fn run(root: &Path, args: &[&str]) -> Result<Output, String> {
@@ -53,7 +55,7 @@ fn run(root: &Path, args: &[&str]) -> Result<Output, String> {
     // Git's own pathspec patterns when cleaning up untracked files.
     if matches!(
         args.first().copied(),
-        Some("diff" | "add" | "restore" | "rm")
+        Some("diff" | "add" | "restore" | "rm" | "clean" | "ls-tree")
     ) {
         command.arg("--literal-pathspecs");
     }
@@ -93,6 +95,19 @@ fn snapshot(folder: &Path) -> Result<Snapshot, String> {
     let branch = git(path, &["symbolic-ref", "--quiet", "--short", "HEAD"])
         .map(|name| name.trim_end().to_owned())
         .unwrap_or_else(|_| "Detached HEAD".to_owned());
+    // Compare with the configured upstream; unavailable for new or detached branches.
+    let divergence = git(
+        path,
+        &["rev-list", "--left-right", "--count", "HEAD...@{upstream}"],
+    )
+    .ok()
+    .and_then(|counts| {
+        let mut counts = counts.split_whitespace();
+        Some((
+            counts.next()?.parse::<usize>().ok()?,
+            counts.next()?.parse::<usize>().ok()?,
+        ))
+    });
     let status = run(
         path,
         &[
@@ -205,6 +220,8 @@ fn snapshot(folder: &Path) -> Result<Snapshot, String> {
         stashes,
         submodules,
         cherry_picking,
+        ahead: divergence.map(|(ahead, _)| ahead),
+        behind: divergence.map(|(_, behind)| behind),
     })
 }
 
@@ -228,6 +245,9 @@ enum Action {
         path: String,
     },
     Unstage {
+        path: String,
+    },
+    Discard {
         path: String,
     },
     Commit {
@@ -353,6 +373,45 @@ fn perform(root: Option<String>, action: Action) -> Result<Response, String> {
                         git(root, &["restore", "--staged", "--", &path])?;
                     } else {
                         git(root, &["rm", "--cached", "-f", "--", &path])?;
+                    }
+                }
+                Action::Discard { path } => {
+                    let state = snapshot(root)?;
+                    let change = state
+                        .changes
+                        .iter()
+                        .find(|change| change.path == path)
+                        .ok_or("This file has no changes to discard.")?;
+                    if Path::new(&path)
+                        .components()
+                        .any(|part| !matches!(part, std::path::Component::Normal(_)))
+                        || state.submodules.contains(&path)
+                        || change.index == 'U'
+                        || change.worktree == 'U'
+                        || (change.index == 'A' && change.worktree == 'A')
+                        || (change.index == 'D' && change.worktree == 'D')
+                    {
+                        return Err("Resolve conflicts and submodule changes manually.".into());
+                    }
+                    let in_head = git(root, &["ls-tree", "-z", "HEAD", "--", &path])
+                        .map(|entry| !entry.is_empty())
+                        .unwrap_or(false);
+                    if in_head {
+                        git(
+                            root,
+                            &[
+                                "restore",
+                                "--source=HEAD",
+                                "--staged",
+                                "--worktree",
+                                "--",
+                                &path,
+                            ],
+                        )?;
+                    } else if change.index != '?' && change.index != ' ' {
+                        git(root, &["rm", "-f", "--", &path])?;
+                    } else {
+                        git(root, &["clean", "-f", "--", &path])?;
                     }
                 }
                 Action::Commit { message } => {
@@ -489,6 +548,62 @@ mod tests {
         };
         assert!(committed.changes.is_empty());
         assert_eq!(committed.commits[0].subject, "First commit");
+        // Discard only the requested literal path, including staged edits.
+        std::fs::write(folder.join("a [literal].txt"), "staged edit\n").unwrap();
+        git(folder, &["add", "--", "a [literal].txt"]).unwrap();
+        std::fs::write(folder.join("a [literal].txt"), "unstaged edit\n").unwrap();
+        std::fs::write(folder.join("keep.txt"), "keep me\n").unwrap();
+        perform(
+            root.clone(),
+            Action::Discard {
+                path: "a [literal].txt".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(folder.join("a [literal].txt")).unwrap(),
+            "first line\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(folder.join("keep.txt")).unwrap(),
+            "keep me\n"
+        );
+        assert!(git(folder, &["diff", "--cached"]).unwrap().is_empty());
+        std::fs::remove_file(folder.join("a [literal].txt")).unwrap();
+        perform(
+            root.clone(),
+            Action::Discard {
+                path: "a [literal].txt".into(),
+            },
+        )
+        .unwrap();
+        assert!(folder.join("a [literal].txt").exists());
+        perform(
+            root.clone(),
+            Action::Discard {
+                path: "keep.txt".into(),
+            },
+        )
+        .unwrap();
+        assert!(!folder.join("keep.txt").exists());
+        std::fs::write(folder.join("new [file].txt"), "new\n").unwrap();
+        git(folder, &["add", "--", "new [file].txt"]).unwrap();
+        perform(
+            root.clone(),
+            Action::Discard {
+                path: "new [file].txt".into(),
+            },
+        )
+        .unwrap();
+        assert!(!folder.join("new [file].txt").exists());
+        assert!(perform(
+            root.clone(),
+            Action::Discard {
+                path: "../outside.txt".into()
+            }
+        )
+        .is_err());
+        assert!(snapshot(folder).unwrap().changes.is_empty());
         let Response::Text(details) = perform(
             root,
             Action::Show {

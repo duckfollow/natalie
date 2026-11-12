@@ -31,7 +31,8 @@ export function GitToolbar({
   busy,
   branches,
   currentBranch,
-  staged,
+  ahead,
+  behind,
   changes,
   onCommit,
   onAction,
@@ -39,7 +40,8 @@ export function GitToolbar({
   busy: boolean;
   branches: string[];
   currentBranch: string;
-  staged: number;
+  ahead: number | null;
+  behind: number | null;
   changes: number;
   onCommit: () => void;
   onAction: (action: GitAction) => void;
@@ -92,11 +94,23 @@ export function GitToolbar({
           >
             <span className="git-toolbar-icon">
               <Icon size={20} aria-hidden="true" />
-              {label === "Commit" && staged > 0 && (
-                <small aria-label={`${staged} staged files`}>{staged}</small>
-              )}
             </span>
             {label}
+            {label === "Commit" && changes > 0 && (
+              <small className="git-toolbar-count" aria-label={`${changes} changed files`}>
+                {changes}
+              </small>
+            )}
+            {label === "Pull" && behind != null && behind > 0 && (
+              <small className="git-toolbar-count" aria-label={`${behind} commits to pull`}>
+                {behind}
+              </small>
+            )}
+            {label === "Push" && ahead != null && ahead > 0 && (
+              <small className="git-toolbar-count" aria-label={`${ahead} commits to push`}>
+                {ahead}
+              </small>
+            )}
           </button>
         ))}
       </div>

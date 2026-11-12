@@ -17,6 +17,7 @@ import {
   Minus,
   Plus,
   RefreshCw,
+  Undo2,
   Sun,
   Moon,
   Monitor,
@@ -27,7 +28,7 @@ import {
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open, confirm } from "@tauri-apps/plugin-dialog";
 import { layoutHistory, type Commit } from "./history-graph";
 import { splitDiff } from "./diff-model";
 import {
@@ -52,6 +53,8 @@ type Snapshot = {
   stashes: Reference[];
   submodules: string[];
   cherry_picking: boolean;
+  ahead: number | null;
+  behind: number | null;
 };
 type Selection =
   | { kind: "diff"; path: string; staged: boolean; untracked: boolean }
@@ -79,8 +82,8 @@ const lightLaneColors = [
   "#775719",
   "#3e702c",
 ];
-const laneStep = 22;
-const halfRow = 34;
+const laneStep = 18;
+const halfRow = 38;
 const laneX = (lane: number) => 13 + lane * laneStep;
 
 function CommitGraphRow({
@@ -504,6 +507,28 @@ function App() {
                 </span>
               </button>
               <button
+                className="file-action discard-action"
+                disabled={busy || repo?.submodules.includes(item.path)}
+                aria-label={`Discard changes in ${item.path}`}
+                title="Discard all changes in this file"
+                onClick={() => {
+                  void update(async () => {
+                    const approved = await confirm(
+                      `Discard all staged and unstaged changes in "${item.path}"? New files will be deleted. This cannot be undone.`,
+                      { title: "Discard file changes", kind: "warning", okLabel: "Discard", cancelLabel: "Cancel" },
+                    );
+                    return approved
+                      ? repository<Snapshot>(root, { kind: "discard", path: item.path })
+                      : null;
+                  }, () => {
+                    setSelection(null);
+                    setNotice("File changes discarded.");
+                  });
+                }}
+              >
+                <Undo2 size={14} aria-hidden="true" />
+              </button>
+              <button
                 className="file-action"
                 disabled={busy}
                 aria-label={`${inIndex ? "Unstage" : "Stage"} ${item.path}`}
@@ -624,7 +649,8 @@ function App() {
               busy={busy}
               branches={repo.branches.map(({ name }) => name)}
               currentBranch={repo.branch}
-              staged={staged.length}
+              ahead={repo.ahead}
+              behind={repo.behind}
               changes={repo.changes.length}
               onCommit={() => {
                 setView("changes");
@@ -775,7 +801,17 @@ function App() {
                 : view === "history"
                   ? "Commit history"
                   : "Search commits"}
+              {view !== "changes" && (
+                <span className="history-count" title="Loaded commits">{repo.commits.length}</span>
+              )}
             </h2>
+            {view === "history" && (
+              <div className="history-context" title={repo.branch}>
+                <GitBranch size={13} aria-hidden="true" />
+                <span>{repo.branch}</span>
+                <small>Latest {repo.commits.length} commits</small>
+              </div>
+            )}
             {view === "search" && (
               <input
                 className="commit-search"
@@ -831,7 +867,7 @@ function App() {
                 </form>
               </>
             ) : (
-              <div className="sidebar-scroll history">
+              <div className={`sidebar-scroll history${view === "search" ? " history-search" : ""}`} tabIndex={0} aria-label="Commit history list">
                 {!repo.commits.length && (
                   <p className="group-empty">No commits yet</p>
                 )}
@@ -888,9 +924,9 @@ function App() {
                           )}
                         </span>
                         <small className="commit-meta">
-                          <code>{commit.hash.slice(0, 7)}</code>
                           <span title={commit.author}>{commit.author}</span>
-                          <time dateTime={commit.date}>
+                          <code title={commit.hash}>{commit.hash.slice(0, 7)}</code>
+                          <time dateTime={commit.date} title={new Date(commit.date).toLocaleString()}>
                             {commit.date.slice(0, 10)}
                           </time>
                         </small>

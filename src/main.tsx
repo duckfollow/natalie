@@ -360,6 +360,38 @@ function App() {
       // The current session can still use its repository list.
     }
   }, [recent]);
+  const [gitStatus, setGitStatus] = useState<"checking" | "ready" | "missing" | "error">("checking");
+  const [gitSetupMessage, setGitSetupMessage] = useState("");
+  const [installingGit, setInstallingGit] = useState(false);
+
+  async function checkGit() {
+    setGitStatus("checking");
+    setGitSetupMessage("");
+    try {
+      setGitStatus(await invoke<boolean>("git_available") ? "ready" : "missing");
+    } catch (error) {
+      setGitSetupMessage(String(error));
+      setGitStatus("error");
+    }
+  }
+
+  useEffect(() => {
+    void checkGit();
+  }, []);
+
+  async function installGit() {
+    setInstallingGit(true);
+    setGitSetupMessage("");
+    try {
+      await invoke("install_command_line_tools");
+      setGitSetupMessage("After installation finishes, select Check again.");
+    } catch (error) {
+      setGitSetupMessage(String(error));
+    } finally {
+      setInstallingGit(false);
+    }
+  }
+
   const [repo, setRepo] = useState<Snapshot | null>(null);
   const [panels, setPanels] = useState(() => {
     let navigation = true;
@@ -782,10 +814,10 @@ function App() {
               </button>
             ))}
           </div>
-          <button className="header-secondary" disabled={busy} onClick={() => showPicker("repositories")}>
+          <button className="header-secondary" disabled={busy || gitStatus !== "ready"} onClick={() => showPicker("repositories")}>
             <FolderGit2 size={15} aria-hidden="true" /> Repositories
           </button>
-          <button className="header-secondary" disabled={busy} onClick={() => showPicker("clone")}>
+          <button className="header-secondary" disabled={busy || gitStatus !== "ready"} onClick={() => showPicker("clone")}>
             <Download size={15} aria-hidden="true" /> Clone
           </button>
           {root && (
@@ -806,7 +838,7 @@ function App() {
           <button
             className="primary"
             onClick={chooseRepository}
-            disabled={busy}
+            disabled={busy || gitStatus !== "ready"}
           >
             <FolderOpen size={15} aria-hidden="true" /> Open repository
           </button>
@@ -932,14 +964,30 @@ function App() {
             Review changes, prepare a commit, and browse your repository’s
             history.
           </p>
-          <button
-            className="primary"
-            onClick={chooseRepository}
-            disabled={busy}
-          >
-            <FolderOpen size={16} aria-hidden="true" />
-            {busy ? "Opening…" : "Choose folder"}
-          </button>
+          {gitStatus === "ready" ? (
+            <button className="primary" onClick={chooseRepository} disabled={busy}>
+              <FolderOpen size={16} aria-hidden="true" />
+              {busy ? "Opening…" : "Choose folder"}
+            </button>
+          ) : gitStatus === "checking" ? (
+            <p role="status">Checking Git availability…</p>
+          ) : (
+            <div className="welcome-git-setup">
+              <strong>{gitStatus === "missing" ? "Git is required to open or clone a repository" : "Could not check Git availability"}</strong>
+              {gitStatus === "missing" && <p>Install Apple’s Command Line Tools to enable Git.</p>}
+              {gitSetupMessage && <p role="status">{gitSetupMessage}</p>}
+              <div className="welcome-git-actions">
+                {gitStatus === "missing" && (
+                  <button className="primary" disabled={installingGit} onClick={() => void installGit()}>
+                    <Download size={15} aria-hidden="true" /> Install Command Line Tools
+                  </button>
+                )}
+                <button disabled={installingGit} onClick={() => void checkGit()}>
+                  <RefreshCw size={15} aria-hidden="true" /> Check again
+                </button>
+              </div>
+            </div>
+          )}
         </section>
       ) : (
         <div

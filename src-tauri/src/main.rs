@@ -617,11 +617,42 @@ async fn repository(root: Option<String>, action: Action) -> Result<Response, St
         .map_err(|error| error.to_string())?
 }
 
+#[tauri::command]
+async fn git_available() -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        // Avoid invoking Apple's Git shim before the developer tools are installed.
+        let developer_dir = Command::new("/usr/bin/xcode-select").arg("-p").output()?;
+        if !developer_dir.status.success() {
+            return Ok(false);
+        }
+        let git = Command::new("/usr/bin/git").arg("--version").output()?;
+        Ok(git.status.success())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error: std::io::Error| error.to_string())
+}
+
+#[tauri::command]
+async fn install_command_line_tools() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let result = Command::new("/usr/bin/xcode-select")
+            .arg("--install")
+            .output()
+            .map_err(|error| error.to_string())?;
+        output(result, false).map(|_| ())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             repository,
+            git_available,
+            install_command_line_tools,
             updates::check_for_updates,
             updates::open_release_page
         ])

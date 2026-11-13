@@ -7,13 +7,15 @@ import {
   GitCommitHorizontal,
   GitMerge,
   Layers3,
+  Settings2,
 } from "lucide-react";
 
 export type GitAction =
   | { kind: "fetch" | "pull" | "push" }
   | { kind: "branch"; name: string }
   | { kind: "merge"; branch: string }
-  | { kind: "stash"; message: string };
+  | { kind: "stash"; message: string }
+  | { kind: "set_origin"; url: string };
 
 const operations = [
   { label: "Commit", icon: GitCommitHorizontal },
@@ -23,14 +25,16 @@ const operations = [
   { label: "Branch", icon: GitBranch },
   { label: "Merge", icon: GitMerge },
   { label: "Stash", icon: Layers3 },
+  { label: "Origin", icon: Settings2 },
 ] as const;
 
-type Prompt = "Branch" | "Merge" | "Stash";
+type Prompt = "Branch" | "Merge" | "Stash" | "Origin";
 
 export function GitToolbar({
   busy,
   branches,
   currentBranch,
+  originUrl,
   ahead,
   behind,
   changes,
@@ -40,6 +44,7 @@ export function GitToolbar({
   busy: boolean;
   branches: string[];
   currentBranch: string;
+  originUrl: string | null;
   ahead: number | null;
   behind: number | null;
   changes: number;
@@ -87,7 +92,8 @@ export function GitToolbar({
                 case "Branch":
                 case "Merge":
                 case "Stash":
-                  setValue(label === "Merge" ? (mergeBranches[0] ?? "") : "");
+                case "Origin":
+                  setValue(label === "Origin" ? (originUrl ?? "") : label === "Merge" ? (mergeBranches[0] ?? "") : "");
                   setPrompt(label);
               }
             }}
@@ -127,7 +133,9 @@ export function GitToolbar({
                 ? "Create branch"
                 : prompt === "Merge"
                   ? `Merge into ${currentBranch}`
-                  : "Stash changes"}
+                  : prompt === "Origin"
+                    ? (originUrl == null ? "Add remote origin" : "Change remote origin")
+                    : "Stash changes"}
             </h2>
           </header>
           <form
@@ -140,6 +148,8 @@ export function GitToolbar({
                 onAction({ kind: "merge", branch: value });
               if (prompt === "Stash")
                 onAction({ kind: "stash", message: value });
+              if (prompt === "Origin")
+                onAction({ kind: "set_origin", url: value.trim() });
               setPrompt(null);
             }}
           >
@@ -160,14 +170,19 @@ export function GitToolbar({
               <label>
                 {prompt === "Branch"
                   ? "Branch name"
-                  : "Stash message (optional)"}
+                  : prompt === "Origin" ? "Origin URL" : "Stash message (optional)"}
                 <input
                   autoFocus
                   value={value}
                   onChange={(event) => setValue(event.target.value)}
-                  required={prompt === "Branch"}
+                  required={prompt !== "Stash"}
+                  spellCheck={prompt === "Origin" ? false : undefined}
+                  placeholder={prompt === "Origin" ? "git@github.com:owner/repository.git" : undefined}
                 />
               </label>
+            )}
+            {prompt === "Origin" && (
+              <p>Accepts HTTPS, SSH or a local repository path. A separately configured push URL stays unchanged. Fetch after saving to refresh remote commits.</p>
             )}
             {prompt === "Stash" && (
               <p>Stashes staged, unstaged and untracked changes.</p>
@@ -180,7 +195,7 @@ export function GitToolbar({
                 className="primary"
                 disabled={busy || (prompt !== "Stash" && !value.trim())}
               >
-                {prompt === "Branch" ? "Create" : prompt}
+                {prompt === "Branch" ? "Create" : prompt === "Origin" ? "Save origin" : prompt}
               </button>
             </footer>
           </form>

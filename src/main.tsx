@@ -51,6 +51,7 @@ type Snapshot = {
   branches: Reference[];
   tags: Reference[];
   remotes: string[];
+  origin_url: string | null;
   stashes: Reference[];
   submodules: string[];
   cherry_picking: boolean;
@@ -724,6 +725,7 @@ function App() {
               busy={busy}
               branches={repo.branches.map(({ name }) => name)}
               currentBranch={repo.branch}
+              originUrl={repo.origin_url}
               ahead={repo.ahead}
               behind={repo.behind}
               changes={repo.changes.length}
@@ -739,6 +741,7 @@ function App() {
                 runGitAction(
                   action,
                   {
+                    set_origin: "Origin updated. Fetch to refresh remote commits.",
                     fetch: "Fetch completed.",
                     pull: "Pull completed.",
                     push: "Push completed.",

@@ -42,6 +42,7 @@ struct Snapshot {
     branches: Vec<Reference>,
     tags: Vec<Reference>,
     remotes: Vec<String>,
+    origin_url: Option<String>,
     stashes: Vec<Reference>,
     submodules: Vec<String>,
     cherry_picking: bool,
@@ -195,6 +196,9 @@ fn snapshot(folder: &Path) -> Result<Snapshot, String> {
         "refs/tags",
     ])?;
     let remotes = git(path, &["remote"])?.lines().map(str::to_owned).collect();
+    let origin_url = git(path, &["config", "--get", "remote.origin.url"])
+        .ok()
+        .map(|url| url.trim_end().to_owned());
     let stashes = references(&["stash", "list", "--format=%H%x00%gd · %gs"])?;
     let mut submodules: Vec<_> = git(path, &["ls-files", "--stage", "-z"])?
         .split('\0')
@@ -221,6 +225,7 @@ fn snapshot(folder: &Path) -> Result<Snapshot, String> {
         branches,
         tags,
         remotes,
+        origin_url,
         stashes,
         submodules,
         cherry_picking,
@@ -256,6 +261,9 @@ enum Action {
     },
     Commit {
         message: String,
+    },
+    SetOrigin {
+        url: String,
     },
     Fetch,
     Pull,
@@ -435,6 +443,18 @@ fn perform(root: Option<String>, action: Action) -> Result<Response, String> {
                 Action::Pull => {
                     git(root, &["pull", "--ff-only"])?;
                 }
+                Action::SetOrigin { url } => {
+                    let url = url.trim();
+                    if url.is_empty() || url.starts_with('-') || url.chars().any(char::is_control) {
+                        return Err("Enter a valid origin URL or repository path.".into());
+                    }
+                    let exists = git(root, &["remote"])?.lines().any(|name| name == "origin");
+                    if exists {
+                        git(root, &["remote", "set-url", "origin", url])?;
+                    } else {
+                        git(root, &["remote", "add", "origin", url])?;
+                    }
+                }
                 Action::Push => {
                     git(root, &["push"])?;
                 }
@@ -550,6 +570,75 @@ mod tests {
         assert_eq!(opened.changes[0].worktree, '?');
         assert!(opened.commits.is_empty());
         let root = Some(opened.root);
+        assert!(snapshot(folder).unwrap().origin_url.is_none());
+        perform(
+            root.clone(),
+            Action::SetOrigin {
+                url: "https://example.invalid/old.git".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            snapshot(folder).unwrap().origin_url.as_deref(),
+            Some("https://example.invalid/old.git")
+        );
+        git(
+            folder,
+            &[
+                "remote",
+                "set-url",
+                "--push",
+                "origin",
+                "git@example.invalid:push.git",
+            ],
+        )
+        .unwrap();
+        git(
+            folder,
+            &[
+                "remote",
+                "add",
+                "backup",
+                "https://example.invalid/backup.git",
+            ],
+        )
+        .unwrap();
+        perform(
+            root.clone(),
+            Action::SetOrigin {
+                url: "  git@example.invalid:new.git  ".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            snapshot(folder).unwrap().origin_url.as_deref(),
+            Some("git@example.invalid:new.git")
+        );
+        assert_eq!(
+            git(folder, &["remote", "get-url", "--push", "origin"])
+                .unwrap()
+                .trim(),
+            "git@example.invalid:push.git"
+        );
+        assert_eq!(
+            git(folder, &["remote", "get-url", "backup"])
+                .unwrap()
+                .trim(),
+            "https://example.invalid/backup.git"
+        );
+        for invalid in ["", "  ", "--bad", "https://example.invalid/repo\nother"] {
+            assert!(perform(
+                root.clone(),
+                Action::SetOrigin {
+                    url: invalid.into()
+                }
+            )
+            .is_err());
+        }
+        assert_eq!(
+            snapshot(folder).unwrap().origin_url.as_deref(),
+            Some("git@example.invalid:new.git")
+        );
         let Response::Text(diff) = perform(
             root.clone(),
             Action::Diff {

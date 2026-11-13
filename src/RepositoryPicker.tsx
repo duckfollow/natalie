@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Download, FolderGit2, FolderOpen, X } from "lucide-react";
+import { Check, Download, FolderGit2, FolderOpen, History, Search, X } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
 
 export type CloneTarget = { url: string; parent: string; name: string };
@@ -7,6 +7,7 @@ export type CloneTarget = { url: string; parent: string; name: string };
 export function RepositoryPicker({
   initialView,
   recent,
+  currentPath,
   busy,
   error,
   onClose,
@@ -17,6 +18,7 @@ export function RepositoryPicker({
 }: {
   initialView: "repositories" | "clone";
   recent: string[];
+  currentPath?: string;
   busy: boolean;
   error: string;
   onClose: () => void;
@@ -27,6 +29,8 @@ export function RepositoryPicker({
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [view, setView] = useState(initialView);
+  const [filter, setFilter] = useState("");
+  const filtered = recent.filter((path) => path.toLowerCase().includes(filter.trim().toLowerCase()));
   const [url, setUrl] = useState("");
   const [parent, setParent] = useState("");
   const [name, setName] = useState("");
@@ -84,7 +88,7 @@ export function RepositoryPicker({
           disabled={busy}
           onClick={() => setView("repositories")}
         >
-          Recent
+          <History size={15} aria-hidden="true" /> Recent
         </button>
         <button
           type="button"
@@ -92,7 +96,7 @@ export function RepositoryPicker({
           disabled={busy}
           onClick={() => setView("clone")}
         >
-          Clone
+          <Download size={15} aria-hidden="true" /> Clone
         </button>
       </nav>
       {(pickerError || error) && (
@@ -101,40 +105,64 @@ export function RepositoryPicker({
         </p>
       )}
       {view === "repositories" ? (
-        <div className="repo-picker-content">
-          {recent.length ? (
+        <div className="repo-picker-content repo-picker-recent">
+          {recent.length > 0 && (
+            <div className="repo-picker-search">
+              <Search size={15} aria-hidden="true" />
+              <input
+                type="search"
+                aria-label="Search recent repositories"
+                placeholder="Search repositories"
+                value={filter}
+                onChange={(event) => setFilter(event.target.value)}
+              />
+            </div>
+          )}
+          {filtered.length ? (
             <ul className="repo-list">
-              {recent.map((path) => (
-                <li key={path}>
-                  <button
-                    className="repo-list-item"
-                    disabled={busy}
-                    onClick={() => onOpen(path)}
-                  >
-                    <FolderGit2 size={17} aria-hidden="true" />
-                    <span>
-                      <strong>{path.split("/").at(-1)}</strong>
-                      <small title={path}>{path}</small>
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    className="repo-picker-close"
-                    disabled={busy}
-                    aria-label={`Remove ${path} from recent repositories`}
-                    onClick={() => onForget(path)}
-                  >
-                    <X size={14} />
-                  </button>
-                </li>
-              ))}
+              {filtered.map((path) => {
+                const name = path.split("/").at(-1) || path;
+                const isCurrent = currentPath === path;
+                return (
+                  <li key={path} data-current={isCurrent}>
+                    <button
+                      type="button"
+                      className="repo-list-item"
+                      aria-current={isCurrent ? "true" : undefined}
+                      disabled={busy}
+                      onClick={() => onOpen(path)}
+                    >
+                      <FolderGit2 size={17} aria-hidden="true" />
+                      <span className="repo-list-details">
+                        <strong title={name}>{name}</strong>
+                        <small title={path}>{path}</small>
+                      </span>
+                      {isCurrent && <Check size={15} aria-hidden="true" />}
+                    </button>
+                    <button
+                      type="button"
+                      className="repo-picker-close"
+                      disabled={busy}
+                      aria-label={`Remove ${name} from recent repositories`}
+                      title="Remove from recent repositories"
+                      onClick={() => onForget(path)}
+                    >
+                      <X size={14} aria-hidden="true" />
+                    </button>
+                  </li>
+                );
+              })}
             </ul>
           ) : (
-            <p>No recent repositories.</p>
+            <p className="repo-picker-empty" role="status">
+              {recent.length ? "No matching repositories." : "No recent repositories."}
+            </p>
           )}
-          <button className="primary" disabled={busy} onClick={onChoose}>
-            <FolderOpen size={15} aria-hidden="true" /> Open local folder
-          </button>
+          <footer className="repo-picker-footer">
+            <button className="primary" disabled={busy} onClick={onChoose}>
+              <FolderOpen size={15} aria-hidden="true" /> Open local folder
+            </button>
+          </footer>
         </div>
       ) : (
         <form

@@ -24,6 +24,7 @@ struct Commit {
     subject: String,
     parents: Vec<String>,
     refs: String,
+    local_only: bool,
 }
 
 #[derive(Serialize)]
@@ -42,6 +43,7 @@ struct Snapshot {
     branches: Vec<Reference>,
     tags: Vec<Reference>,
     remotes: Vec<String>,
+    remote_branches: Vec<Reference>,
     origin_url: Option<String>,
     stashes: Vec<Reference>,
     submodules: Vec<String>,
@@ -87,6 +89,39 @@ fn output(result: Output, allow_difference: bool) -> Result<String, String> {
 
 fn git(root: &Path, args: &[&str]) -> Result<String, String> {
     output(run(root, args)?, false)
+}
+
+fn history(path: &Path, revisions: &[&str]) -> Result<Vec<Commit>, String> {
+    let mut args = vec![
+        "log",
+        "-z",
+        "--topo-order",
+        "--decorate=short",
+        "-n",
+        "100",
+        "--format=%H%x00%an%x00%aI%x00%s%x00%P%x00%D",
+    ];
+    args.extend_from_slice(revisions);
+    args.push("--");
+    let log = git(path, &args)?;
+    let mut local_args = vec!["rev-list"];
+    local_args.extend_from_slice(revisions);
+    local_args.extend(["--not", "--remotes=origin", "--"]);
+    let local_hashes = git(path, &local_args)?;
+    let local_hashes: std::collections::HashSet<_> = local_hashes.lines().collect();
+    let fields: Vec<_> = log.strip_suffix('\0').unwrap_or(&log).split('\0').collect();
+    Ok(fields
+        .chunks_exact(6)
+        .map(|record| Commit {
+            hash: record[0].to_owned(),
+            author: record[1].to_owned(),
+            date: record[2].to_owned(),
+            subject: record[3].to_owned(),
+            parents: record[4].split_whitespace().map(str::to_owned).collect(),
+            refs: record[5].to_owned(),
+            local_only: local_hashes.contains(record[0]),
+        })
+        .collect())
 }
 
 fn snapshot(folder: &Path) -> Result<Snapshot, String> {
@@ -140,44 +175,21 @@ fn snapshot(folder: &Path) -> Result<Snapshot, String> {
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
-    let mut commits = Vec::new();
-    if head.is_some() {
-        let log = git(
-            path,
-            &[
-                "log",
-                "-z",
-                "--topo-order",
-                "--branches",
-                "--decorate=short",
-                "-n",
-                "100",
-                "--format=%H%x00%an%x00%aI%x00%s%x00%P%x00%D",
-                "HEAD",
-                "--",
-            ],
-        )?;
-        let fields = log
-            .strip_suffix('\0')
-            .unwrap_or(&log)
-            .split('\0')
-            .collect::<Vec<_>>();
-        for record in fields.chunks_exact(6) {
-            commits.push(Commit {
-                hash: record[0].to_owned(),
-                author: record[1].to_owned(),
-                date: record[2].to_owned(),
-                subject: record[3].to_owned(),
-                parents: record[4].split_whitespace().map(str::to_owned).collect(),
-                refs: record[5].to_owned(),
-            });
-        }
-    }
+    let commits = if head.is_some() {
+        history(path, &["--branches", "HEAD"])?
+    } else {
+        Vec::new()
+    };
     let references = |args: &[&str]| -> Result<Vec<Reference>, String> {
         Ok(git(path, args)?
             .lines()
             .filter_map(|line| {
                 let (hash, name) = line.split_once('\0')?;
+                let name = match name.split_once('\0') {
+                    Some((name, "")) => name,
+                    Some(_) => return None,
+                    None => name,
+                };
                 Some(Reference {
                     name: name.to_owned(),
                     hash: hash.to_owned(),
@@ -196,6 +208,11 @@ fn snapshot(folder: &Path) -> Result<Snapshot, String> {
         "refs/tags",
     ])?;
     let remotes = git(path, &["remote"])?.lines().map(str::to_owned).collect();
+    let remote_branches = references(&[
+        "for-each-ref",
+        "--format=%(objectname)%00%(refname:strip=2)%00%(symref)",
+        "refs/remotes",
+    ])?;
     let origin_url = git(path, &["config", "--get", "remote.origin.url"])
         .ok()
         .map(|url| url.trim_end().to_owned());
@@ -225,6 +242,7 @@ fn snapshot(folder: &Path) -> Result<Snapshot, String> {
         branches,
         tags,
         remotes,
+        remote_branches,
         origin_url,
         stashes,
         submodules,
@@ -271,6 +289,16 @@ enum Action {
     Branch {
         name: String,
     },
+    DeleteBranch {
+        branch: String,
+    },
+    CheckoutBranch {
+        branch: String,
+    },
+    CheckoutRemote {
+        remote: String,
+        branch: String,
+    },
     Merge {
         branch: String,
     },
@@ -288,6 +316,9 @@ enum Action {
     },
     ContinueCherryPick,
     AbortCherryPick,
+    History {
+        hash: String,
+    },
     Show {
         hash: String,
     },
@@ -298,6 +329,24 @@ enum Action {
 enum Response {
     Snapshot(Snapshot),
     Text(String),
+    History(Vec<Commit>),
+}
+
+fn checkout_branch(root: &Path, branch: &str) -> Result<(), String> {
+    let reference = format!("refs/heads/{branch}");
+    git(root, &["check-ref-format", &reference])?;
+    git(root, &["show-ref", "--verify", &reference])?;
+    git(
+        root,
+        &[
+            "switch",
+            "--no-guess",
+            "--no-overwrite-ignore",
+            "--",
+            branch,
+        ],
+    )?;
+    Ok(())
 }
 
 fn perform(root: Option<String>, action: Action) -> Result<Response, String> {
@@ -358,6 +407,12 @@ fn perform(root: Option<String>, action: Action) -> Result<Response, String> {
                 args.extend(["--", &path]);
             }
             output(run(root, &args)?, untracked).map(Response::Text)
+        }
+        Action::History { hash } => {
+            if !matches!(hash.len(), 40 | 64) || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+                return Err("Invalid commit hash.".into());
+            }
+            history(root, &[&hash]).map(Response::History)
         }
         Action::Show { hash } => {
             if !matches!(hash.len(), 40 | 64) || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -460,6 +515,45 @@ fn perform(root: Option<String>, action: Action) -> Result<Response, String> {
                 }
                 Action::Branch { name } => {
                     git(root, &["branch", "--", &name])?;
+                }
+                Action::DeleteBranch { branch } => {
+                    git(root, &["branch", "--delete", "--", &branch])?;
+                }
+                Action::CheckoutBranch { branch } => checkout_branch(root, &branch)?,
+                Action::CheckoutRemote { remote, branch } => {
+                    if !git(root, &["remote"])?.lines().any(|name| name == remote) {
+                        return Err("Remote no longer exists.".into());
+                    }
+                    let reference = format!("refs/remotes/{remote}/{branch}");
+                    git(root, &["check-ref-format", &reference])?;
+                    git(root, &["show-ref", "--verify", &reference])?;
+                    if run(root, &["symbolic-ref", "--quiet", &reference])?
+                        .status
+                        .success()
+                    {
+                        return Err("Select a remote branch.".into());
+                    }
+                    let local = format!("refs/heads/{branch}");
+                    git(root, &["check-ref-format", &local])?;
+                    if run(root, &["show-ref", "--verify", "--quiet", &local])?
+                        .status
+                        .success()
+                    {
+                        checkout_branch(root, &branch)?;
+                    } else {
+                        git(
+                            root,
+                            &[
+                                "switch",
+                                "--no-overwrite-ignore",
+                                "--track",
+                                "-c",
+                                &branch,
+                                "--",
+                                &reference,
+                            ],
+                        )?;
+                    }
                 }
                 Action::Merge { branch } => {
                     let reference = format!("refs/heads/{branch}");
@@ -736,6 +830,20 @@ mod tests {
         std::fs::write(folder.join("a [literal].txt"), "second line\n").unwrap();
         git(folder, &["add", "--", "a [literal].txt"]).unwrap();
         git(folder, &["commit", "-m", "Second commit"]).unwrap();
+        git(
+            folder,
+            &["update-ref", "refs/remotes/origin/topic/example", "HEAD"],
+        )
+        .unwrap();
+        git(
+            folder,
+            &[
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/remotes/origin/topic/example",
+            ],
+        )
+        .unwrap();
         let before_reset = snapshot(folder).unwrap();
         std::fs::write(folder.join("a [literal].txt"), "unstaged edit\n").unwrap();
         let Response::Snapshot(reset) = perform(
@@ -750,13 +858,28 @@ mod tests {
             panic!("Expected repository snapshot");
         };
         assert_eq!(reset.head, committed.head);
+        assert_eq!(reset.remote_branches.len(), 1);
+        let remote = &reset.remote_branches[0];
+        assert_eq!(remote.name, "origin/topic/example");
+        let Response::History(commits) = perform(
+            Some(reset.root),
+            Action::History {
+                hash: remote.hash.clone(),
+            },
+        )
+        .unwrap() else {
+            panic!("Expected remote branch history");
+        };
+        assert_eq!(commits[0].subject, "Second commit");
+        assert!(commits.iter().all(|commit| !commit.local_only));
+        assert_eq!(snapshot(folder).unwrap().head, committed.head);
         assert!(git(folder, &["diff", "--cached"])
             .unwrap()
             .contains("+second line"));
         assert!(git(folder, &["diff"]).unwrap().contains("+unstaged edit"));
         std::fs::write(folder.join("draft.txt"), "untracked draft").unwrap();
         let Response::Snapshot(stashed) = perform(
-            Some(committed.root),
+            Some(committed.root.clone()),
             Action::Stash {
                 message: "Test stash".into(),
             },
@@ -766,5 +889,87 @@ mod tests {
         };
         assert!(!folder.join("draft.txt").exists());
         assert!(stashed.stashes[0].name.contains("Test stash"));
+        let checkout = || {
+            perform(
+                Some(committed.root.clone()),
+                Action::CheckoutRemote {
+                    remote: "origin".into(),
+                    branch: "topic/example".into(),
+                },
+            )
+        };
+        std::fs::write(folder.join("a [literal].txt"), "conflicting edit").unwrap();
+        assert!(checkout().is_err());
+        assert_eq!(snapshot(folder).unwrap().branch, "main");
+        assert_eq!(
+            std::fs::read_to_string(folder.join("a [literal].txt")).unwrap(),
+            "conflicting edit"
+        );
+        git(folder, &["restore", "--", "a [literal].txt"]).unwrap();
+        let Response::Snapshot(checked_out) = checkout().unwrap() else {
+            panic!("Expected checkout snapshot");
+        };
+        assert_eq!(checked_out.branch, "topic/example");
+        assert_eq!(
+            git(
+                folder,
+                &["rev-parse", "--symbolic-full-name", "@{upstream}"]
+            )
+            .unwrap()
+            .trim(),
+            "refs/remotes/origin/topic/example"
+        );
+        git(folder, &["switch", "main"]).unwrap();
+        let Response::Snapshot(existing) = checkout().unwrap() else {
+            panic!("Expected checkout snapshot");
+        };
+        assert_eq!(existing.branch, "topic/example");
+        assert_eq!(existing.head, checked_out.head);
+        let Response::Snapshot(local) = perform(
+            Some(existing.root),
+            Action::CheckoutBranch {
+                branch: "main".into(),
+            },
+        )
+        .unwrap() else {
+            panic!("Expected local checkout snapshot");
+        };
+        assert_eq!(local.branch, "main");
+        assert_eq!(local.head, committed.head);
+        let delete = |branch: &str| {
+            perform(
+                Some(local.root.clone()),
+                Action::DeleteBranch {
+                    branch: branch.into(),
+                },
+            )
+        };
+        assert!(delete("main").is_err());
+        git(folder, &["branch", "unmerged", &remote.hash]).unwrap();
+        git(folder, &["commit", "--allow-empty", "-m", "Local commit"]).unwrap();
+        let history = snapshot(folder).unwrap().commits;
+        assert!(
+            history
+                .iter()
+                .find(|commit| commit.subject == "Local commit")
+                .unwrap()
+                .local_only
+        );
+        assert!(
+            !history
+                .iter()
+                .find(|commit| commit.subject == "Second commit")
+                .unwrap()
+                .local_only
+        );
+        assert!(delete("unmerged").is_err());
+        let Response::Snapshot(deleted) = delete("topic/example").unwrap() else {
+            panic!("Expected branch deletion snapshot");
+        };
+        assert!(!deleted
+            .branches
+            .iter()
+            .any(|branch| branch.name == "topic/example"));
+        assert_eq!(deleted.remote_branches[0].name, "origin/topic/example");
     }
 }

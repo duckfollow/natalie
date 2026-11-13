@@ -2,6 +2,7 @@ import {
   CircleAlert,
   ChevronRight,
   CircleCheck,
+  Cloud,
   FileDiff,
   Download,
   FolderGit2,
@@ -17,10 +18,12 @@ import {
   Plus,
   RefreshCw,
   Undo2,
+  Tag,
   Sun,
   Moon,
   Monitor,
   PanelLeft,
+  PanelRightOpen,
   List,
 } from "lucide-react";
 import type { CSSProperties } from "react";
@@ -51,6 +54,7 @@ type Snapshot = {
   branches: Reference[];
   tags: Reference[];
   remotes: string[];
+  remote_branches: Reference[];
   origin_url: string | null;
   stashes: Reference[];
   submodules: string[];
@@ -86,22 +90,24 @@ const lightLaneColors = [
 ];
 const laneStep = 28;
 const lanePadding = 17;
-const halfRow = 38;
-const laneX = (lane: number) => lanePadding + lane * laneStep;
+const laneX = (lane: number, compact = false) => lanePadding + lane * (compact ? 18 : laneStep);
 
 function CommitGraphRow({
   row,
   width,
   author,
   theme,
+  compact,
 }: {
   row: ReturnType<typeof layoutHistory>["rows"][number];
   width: number;
   author: string;
+  compact: boolean;
   theme: "light" | "dark";
 }) {
   const colors = theme === "light" ? lightLaneColors : laneColors;
-  const graphWidth = laneX(width - 1) + lanePadding;
+  const halfRow = compact ? 16 : 38;
+  const graphWidth = laneX(width - 1, compact) + lanePadding;
   const initials = author
     .trim()
     .split(/\s+/)
@@ -118,19 +124,20 @@ function CommitGraphRow({
     >
       <svg width={graphWidth} height={halfRow * 2} fill="none" strokeLinejoin="round">
         {row.edges.map((edge, index) => {
-          const from = laneX(edge.from);
-          const to = laneX(edge.to);
+          const from = laneX(edge.from, compact);
+          const to = laneX(edge.to, compact);
           const start = edge.part === "top" ? 0 : halfRow;
           const end = start + halfRow;
           let path = `M ${from} ${start} V ${end}`;
           if (from !== to) {
             const bend = start + halfRow / 2;
-            const offset = 6 * Math.sign(to - from);
+            const radius = compact ? 4 : 6;
+            const offset = radius * Math.sign(to - from);
             path = [
-              `M ${from} ${start} V ${bend - 6}`,
+              `M ${from} ${start} V ${bend - radius}`,
               `Q ${from} ${bend} ${from + offset} ${bend}`,
               `H ${to - offset}`,
-              `Q ${to} ${bend} ${to} ${bend + 6} V ${end}`,
+              `Q ${to} ${bend} ${to} ${bend + radius} V ${end}`,
             ].join(" ");
           }
           return (
@@ -138,7 +145,9 @@ function CommitGraphRow({
               key={index}
               d={path}
               stroke={colors[edge.color % colors.length]}
-              strokeWidth={edge.merge ? 2.6 : 1.6}
+              opacity={compact ? 0.7 : undefined}
+              strokeDasharray={edge.dashed ? "4 3" : undefined}
+              strokeWidth={edge.merge && !compact ? 2.6 : 1.6}
             />
           );
         })}
@@ -146,24 +155,24 @@ function CommitGraphRow({
       <span
         className={`commit-dot${row.isMerge ? " commit-dot-merge" : ""}`}
         style={{
-          left: laneX(row.index),
+          left: laneX(row.index, compact),
           background: colors[row.color % colors.length],
         }}
       >
-        {row.isMerge ? null : initials}
+        {row.isMerge || compact ? null : initials}
       </span>
     </span>
   );
 }
 
-function DiffLines({ lines }: { lines: string[] }) {
+function DiffLines({ lines, patch = false }: { lines: string[]; patch?: boolean }) {
   return (
     <pre className="diff">
       {lines.map((line, index) => (
         <span
           key={index}
           className={
-            line.startsWith("+++") || line.startsWith("---")
+            !patch && (line.startsWith("+++ ") || line.startsWith("--- "))
               ? "meta"
               : line.startsWith("+")
                 ? "added"
@@ -184,36 +193,49 @@ function DiffLines({ lines }: { lines: string[] }) {
 function DiffFiles({ text, commit }: { text: string; commit?: Commit }) {
   const { intro, files } = useMemo(() => splitDiff(text), [text]);
   const sections = useRef<Array<HTMLDetailsElement | null>>([]);
+  const totals = files.reduce(
+    (total, file) => ({
+      additions: total.additions + file.additions,
+      deletions: total.deletions + file.deletions,
+    }),
+    { additions: 0, deletions: 0 },
+  );
   if (!files.length && !commit) return <DiffLines lines={intro} />;
   return (
     <div className="diff-files">
-      {files.length > 1 && (
+      {files.length > 0 && (
         <div className="diff-file-toolbar">
-          <span>{files.length} changed files</span>
-          <select
-            aria-label="Jump to changed file"
-            value=""
-            onChange={(event) => {
-              if (!event.target.value) return;
-              const section = sections.current[Number(event.target.value)];
-              if (section) {
-                section.open = true;
-                section.scrollIntoView({ block: "start" });
-                section
-                  .querySelector("summary")
-                  ?.focus({ preventScroll: true });
-              }
-            }}
-          >
-            <option value="" disabled>
-              Jump to file…
-            </option>
-            {files.map(({ path }, index) => (
-              <option key={index} value={index}>
-                {path}
+          <span className="diff-change-summary">
+            <strong>{files.length} {files.length === 1 ? "changed file" : "changed files"}</strong>
+            <span className="diff-added" aria-label={`${totals.additions} additions`}>+{totals.additions}</span>
+            <span className="diff-removed" aria-label={`${totals.deletions} deletions`}>−{totals.deletions}</span>
+          </span>
+          {files.length > 1 && (
+            <select
+              aria-label="Jump to changed file"
+              value=""
+              onChange={(event) => {
+                if (!event.target.value) return;
+                const section = sections.current[Number(event.target.value)];
+                if (section) {
+                  section.open = true;
+                  section.scrollIntoView({ block: "start" });
+                  section
+                    .querySelector("summary")
+                    ?.focus({ preventScroll: true });
+                }
+              }}
+            >
+              <option value="" disabled>
+                Jump to file…
               </option>
-            ))}
-          </select>
+              {files.map(({ path }, index) => (
+                <option key={index} value={index}>
+                  {path}
+                </option>
+              ))}
+            </select>
+          )}
         </div>
       )}
       <div className="diff-file-scroll">
@@ -223,11 +245,11 @@ function DiffFiles({ text, commit }: { text: string; commit?: Commit }) {
             <div className="diff-commit-meta">
               <span>{commit.author}</span>
               <time dateTime={commit.date}>{commit.date.slice(0, 10)}</time>
-              <code title={commit.hash}>{commit.hash.slice(0, 12)}</code>
+
             </div>
             {intro.some((line) => line.trim()) && (
               <details className="diff-commit-raw">
-                <summary>Commit details</summary>
+                <summary>Commit metadata</summary>
                 <DiffLines lines={intro} />
               </details>
             )}
@@ -236,7 +258,7 @@ function DiffFiles({ text, commit }: { text: string; commit?: Commit }) {
         ) : (
           intro.some((line) => line.trim()) && <DiffLines lines={intro} />
         )}
-        {files.map(({ path, lines, additions, deletions }, index) => (
+        {files.map(({ path, lines, metadata, additions, deletions }, index) => (
           <details
             className="diff-file"
             open={index === 0}
@@ -248,7 +270,10 @@ function DiffFiles({ text, commit }: { text: string; commit?: Commit }) {
             <summary>
               <ChevronRight size={14} aria-hidden="true" />
               <FileText size={15} aria-hidden="true" />
-              <strong title={path}>{path}</strong>
+              <span className="diff-file-path" title={path}>
+                <strong>{path.split("/").at(-1)}</strong>
+                {path.includes("/") && <small>{path.slice(0, path.lastIndexOf("/"))}</small>}
+              </span>
               <span
                 className="diff-added"
                 aria-label={`${additions} additions`}
@@ -262,7 +287,13 @@ function DiffFiles({ text, commit }: { text: string; commit?: Commit }) {
                 −{deletions}
               </span>
             </summary>
-            <DiffLines lines={lines} />
+            <DiffLines lines={lines} patch={metadata.length > 0} />
+            {metadata.length > 0 && (
+              <details className="diff-patch-metadata">
+                <summary>Patch metadata</summary>
+                <DiffLines lines={metadata} />
+              </details>
+            )}
           </details>
         ))}
       </div>
@@ -350,6 +381,17 @@ function App() {
   const diffPanel = useRef<HTMLElement>(null);
   const resizeStart = useRef({ x: 0, width: 0 });
   const [listWidth, setListWidth] = useState<number>();
+  const [historyWidths, setHistoryWidths] = useState<Record<string, number>>(() => {
+    try {
+      const saved: unknown = JSON.parse(localStorage.getItem("natalie.historyWidths") ?? "{}");
+      if (!saved || typeof saved !== "object" || Array.isArray(saved)) return {};
+      return Object.fromEntries(Object.entries(saved).filter(
+        ([, width]) => typeof width === "number" && Number.isFinite(width) && width >= 0,
+      ));
+    } catch {
+      return {};
+    }
+  });
   const [resizingDiff, setResizingDiff] = useState(false);
 
   function constrainListWidth(width: number) {
@@ -357,10 +399,11 @@ function App() {
     const diff = diffPanel.current;
     if (!list || !diff) return width;
     const maxWidth = list.offsetWidth + diff.offsetWidth - 280;
-    return Math.max(180, Math.min(width, maxWidth));
+    return Math.max(view === "history" ? 0 : 180, Math.min(width, maxWidth));
   }
 
   const [view, setView] = useState<WorkspaceView>("changes");
+
   const [search, setSearch] = useState("");
   const [cherryPick, setCherryPick] = useState<Commit | null>(null);
   useEffect(() => {
@@ -390,6 +433,12 @@ function App() {
   const [loadingDiff, setLoadingDiff] = useState(false);
   const [message, setMessage] = useState("");
   const [notice, setNotice] = useState("");
+
+  useEffect(() => {
+    if (!notice) return;
+    const timer = window.setTimeout(() => setNotice(""), 4200);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const pending = useRef(false);
@@ -398,14 +447,69 @@ function App() {
     [];
   const unstaged = repo?.changes.filter((item) => item.worktree !== " ") ?? [];
   const root = repo?.root ?? null;
+  const [historyBranch, setHistoryBranch] = useState<string | null>(null);
+  const [remoteHistory, setRemoteHistory] = useState<{
+    root: string;
+    hash: string;
+    commits: Commit[];
+    error?: string;
+  } | null>(null);
+  const remoteHash = view === "history"
+    ? repo?.remote_branches.find(({ name }) => name === historyBranch)?.hash
+    : undefined;
+  const loadedHistory = remoteHistory && remoteHistory.root === root && remoteHistory.hash === remoteHash
+    ? remoteHistory
+    : null;
+  const commits = remoteHash ? loadedHistory?.commits : repo?.commits;
+
+  useEffect(() => {
+    if (!root || !remoteHash) return;
+    let current = true;
+    repository<Commit[]>(root, { kind: "history", hash: remoteHash }).then(
+      (commits) => {
+        if (current) setRemoteHistory({ root, hash: remoteHash, commits });
+      },
+      (failure) => {
+        if (current) setRemoteHistory({ root, hash: remoteHash, commits: [], error: String(failure) });
+      },
+    );
+    return () => {
+      current = false;
+    };
+  }, [root, remoteHash]);
+
   const selectedCommit =
     selection?.kind === "show"
-      ? repo?.commits.find(({ hash }) => hash === selection.hash)
+      ? commits?.find(({ hash }) => hash === selection.hash)
       : undefined;
   const graph = useMemo(
-    () => layoutHistory(repo?.commits ?? []),
-    [repo?.commits],
+    () => layoutHistory(commits ?? []),
+    [commits],
   );
+
+  const history = view === "history";
+  const graphWidth = laneX(graph.width - 1) + lanePadding;
+  const graphThreshold = Math.max(180, graphWidth + 122);
+  const historyWidth = root ? historyWidths[root] : undefined;
+  const graphOnly = history && historyWidth != null && historyWidth < graphThreshold;
+  const listVisible = history || panels.list;
+  const preferredWidth = history ? historyWidth : listWidth;
+
+  useEffect(() => {
+    if (resizingDiff) return;
+    try {
+      localStorage.setItem("natalie.historyWidths", JSON.stringify(historyWidths));
+    } catch {
+      // Keep the current session's widths when storage is unavailable.
+    }
+  }, [historyWidths, resizingDiff]);
+
+  function resizeList(width: number) {
+    const next = constrainListWidth(width);
+    if (history && root) {
+      setHistoryWidths((widths) => ({ ...widths, [root]: next }));
+    } else setListWidth(next);
+  }
 
   useEffect(() => {
     setDiff("");
@@ -482,12 +586,16 @@ function App() {
       },
       () => {
         setSelection(null);
+        if ("kind" in action && (action.kind === "checkout_remote" || action.kind === "checkout_branch")) {
+          setHistoryBranch(null);
+        }
         setNotice(message);
       },
     );
   }
 
   function enterRepository() {
+    setHistoryBranch(null);
     setSelection(null);
     setView("changes");
     setSearch("");
@@ -636,9 +744,7 @@ function App() {
     <main>
       <header className="app-header">
         <div className="brand">
-          <span className="mark" aria-hidden="true">
-            N
-          </span>
+          <img className="mark" src="/natalie-mark.svg" alt="" />
           <strong>Natalie</strong>
         </div>
         {repo && (
@@ -753,7 +859,7 @@ function App() {
               }
             />
           </div>
-          <div
+          {!history && <div
             className="workspace-layout"
             role="group"
             aria-label="Workspace layout"
@@ -770,7 +876,7 @@ function App() {
             >
               <List size={15} aria-hidden="true" />
             </button>
-          </div>
+          </div>}
         </div>
       )}
       {error && !picker && (
@@ -810,15 +916,17 @@ function App() {
         </div>
       )}
       {notice && (
-        <div className="banner" role="status">
-          <CircleCheck size={15} aria-hidden="true" /> <span>{notice}</span>
+        <div className="success-notice" key={notice}>
+          <div className="success-notice-content">
+            <div className="banner" role="status">
+              <CircleCheck size={15} aria-hidden="true" /> <span>{notice}</span>
+            </div>
+          </div>
         </div>
       )}
       {!repo ? (
         <section className="welcome">
-          <span className="mark large" aria-hidden="true">
-            <GitBranch size={30} strokeWidth={1.7} />
-          </span>
+          <img className="mark large" src="/natalie-mark.svg" alt="" />
           <h1>Open a Git repository</h1>
           <p>
             Review changes, prepare a commit, and browse your repository’s
@@ -837,21 +945,55 @@ function App() {
         <div
           className="workspace"
           data-navigation={panels.navigation ? "open" : "collapsed"}
-          data-list={panels.list ? "open" : "closed"}
+          data-list={graphOnly ? "graph" : listVisible ? "open" : "closed"}
           data-resizing-diff={resizingDiff}
-          style={listWidth == null ? undefined : { "--preferred-list-width": `${listWidth}px` } as CSSProperties}
+          style={{
+            "--graph-list-width": `${laneX(graph.width - 1, true) + lanePadding + 20}px`,
+            "--history-list-width": view === "history" ? `${laneX(graph.width - 1) + lanePadding + 245}px` : undefined,
+            "--preferred-list-width": preferredWidth == null ? undefined : `${preferredWidth}px`,
+          } as CSSProperties}
         >
           <RepositorySidebar
             {...repo}
             collapsed={!panels.navigation}
             onExpand={toggleSidebar}
             view={view}
+            historyBranch={remoteHash ? historyBranch : null}
+            busy={busy}
+            onCheckoutBranch={(branch, remote) =>
+              runGitAction(
+                remote ? { kind: "checkout_remote", remote, branch } : { kind: "checkout_branch", branch },
+                `Checked out ${branch}`,
+              )
+            }
+            onDeleteBranch={(branch) => {
+              void update(async () => {
+                const approved = await confirm(
+                  `Delete the local branch "${branch}"?`,
+                  { title: "Delete branch", kind: "warning", okLabel: "Delete branch", cancelLabel: "Cancel" },
+                );
+                return approved
+                  ? repository<Snapshot>(root, { kind: "delete_branch", branch })
+                  : null;
+              }, () => {
+                setSelection(null);
+                setNotice(`Deleted local branch ${branch}.`);
+              });
+            }}
+            onRemoteBranch={(ref) => {
+              setHistoryBranch(ref.name);
+              setView("history");
+              setPanels((current) => ({ ...current, list: true }));
+              setSelection({ kind: "show", hash: ref.hash });
+            }}
             onView={(next) => {
+              setHistoryBranch(null);
               setView(next);
               setPanels((current) => ({ ...current, list: true }));
               setSelection(null);
             }}
             onCommit={(hash) => {
+              setHistoryBranch(null);
               setView("history");
               setSelection({ kind: "show", hash });
             }}
@@ -860,24 +1002,44 @@ function App() {
             className="workspace-list"
             id="workspace-list"
             ref={listPanel}
-            hidden={!panels.list}
-            aria-label={view === "changes" ? "Changed files" : "Commits"}
+            hidden={!listVisible}
+            aria-label={graphOnly ? "Commit graph" : view === "changes" ? "Changed files" : "Commits"}
           >
             <h2 className="workspace-list-title">
-              {view === "changes"
+              {graphOnly ? (
+                <>
+                  <span>Graph</span>
+                  <button
+                    type="button"
+                    className="restore-graph"
+                    aria-label="Restore full commit history"
+                    title="Restore full commit history"
+                    onClick={() => {
+                      if (!root) return;
+                      setHistoryWidths((widths) => {
+                        const next = { ...widths };
+                        delete next[root];
+                        return next;
+                      });
+                    }}
+                  >
+                    <PanelRightOpen size={13} aria-hidden="true" />
+                  </button>
+                </>
+              ) : view === "changes"
                 ? "File status"
                 : view === "history"
                   ? "Commit history"
                   : "Search commits"}
-              {view !== "changes" && (
-                <span className="history-count" title="Loaded commits">{repo.commits.length}</span>
+              {!graphOnly && view !== "changes" && (
+                <span className="history-count" title="Loaded commits">{commits?.length ?? 0}</span>
               )}
             </h2>
-            {view === "history" && (
-              <div className="history-context" title={repo.branch}>
+            {view === "history" && !graphOnly && (
+              <div className="history-context" title={remoteHash ? historyBranch ?? repo.branch : repo.branch}>
                 <GitBranch size={13} aria-hidden="true" />
-                <span>{repo.branch}</span>
-                <small>Latest {repo.commits.length} commits</small>
+                <span>{remoteHash ? historyBranch : repo.branch}</span>
+                <small>Latest {commits?.length ?? 0} commits</small>
               </div>
             )}
             {view === "search" && (
@@ -936,10 +1098,12 @@ function App() {
               </>
             ) : (
               <div className={`sidebar-scroll history${view === "search" ? " history-search" : ""}`} tabIndex={0} aria-label="Commit history list">
-                {!repo.commits.length && (
-                  <p className="group-empty">No commits yet</p>
+                {!commits?.length && (
+                  <p className="group-empty">
+                    {loadedHistory?.error ?? (remoteHash && !loadedHistory ? "Loading history…" : "No commits yet")}
+                  </p>
                 )}
-                {repo.commits.map((commit, index) => {
+                {commits?.map((commit, index) => {
                   if (
                     view === "search" &&
                     !`${commit.subject} ${commit.author} ${commit.hash} ${commit.refs}`
@@ -956,12 +1120,14 @@ function App() {
                           : ""
                       }
                       key={commit.hash}
+                      aria-label={graphOnly ? `${commit.subject || "Untitled commit"} · ${commit.hash.slice(0, 7)}` : undefined}
+                      title={graphOnly ? `${commit.subject || "Untitled commit"} · ${commit.hash.slice(0, 7)}` : undefined}
                       aria-pressed={
                         selection?.kind === "show" &&
                         selection.hash === commit.hash
                       }
                       style={
-                        view === "history"
+                        view === "history" && !graphOnly
                           ? { minWidth: laneX(graph.width - 1) + lanePadding + 122 }
                           : undefined
                       }
@@ -973,11 +1139,12 @@ function App() {
                         <CommitGraphRow
                           row={graph.rows[index]}
                           width={graph.width}
+                          compact={graphOnly}
                           author={commit.author}
                           theme={theme}
                         />
                       )}
-                      <span className="commit-details">
+                      {!graphOnly && <span className="commit-details">
                         <span className="commit-title">
                           <strong title={view === "search" ? commit.subject : undefined}>
                             {commit.subject || "Untitled commit"}
@@ -1000,26 +1167,36 @@ function App() {
                         </small>
                         {commit.refs && (
                           <span className="commit-ref-list">
-                            {commit.refs.split(", ").map((ref) => (
-                              <span
-                                className="commit-ref"
-                                key={ref}
-                                title={ref}
-                              >
-                                <GitBranch size={10} aria-hidden="true" />
-                                <span>{ref}</span>
-                              </span>
-                            ))}
+                            {commit.refs.split(", ").map((ref) => {
+                              const kind = ref.startsWith("tag: ") ? "tag"
+                                : ref === "HEAD" || ref.startsWith("HEAD -> ") ? "current"
+                                : repo.remote_branches.some(({ name }) => name === ref)
+                                  || repo.remotes.some((remote) => ref === `${remote}/HEAD`) ? "remote"
+                                : "local";
+                              const Icon = kind === "tag" ? Tag : kind === "remote" ? Cloud : GitBranch;
+                              const label = {
+                                tag: "Tag",
+                                current: "Current checkout",
+                                remote: "Remote branch",
+                                local: "Local branch",
+                              }[kind];
+                              return (
+                                <span className="commit-ref" data-kind={kind} key={ref} title={`${label} · ${ref}`}>
+                                  <Icon size={10} aria-hidden="true" />
+                                  <span><span className="commit-ref-kind">{label} </span>{ref}</span>
+                                </span>
+                              );
+                            })}
                           </span>
                         )}
-                      </span>
+                      </span>}
                     </button>
                   );
                 })}
               </div>
             )}
           </aside>
-          {panels.list && (
+          {listVisible && (
             <div
               className="diff-resize-handle"
               role="separator"
@@ -1040,7 +1217,7 @@ function App() {
               onPointerMove={(event) => {
                 if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
                 const { x, width } = resizeStart.current;
-                setListWidth(constrainListWidth(width + event.clientX - x));
+                resizeList(width + event.clientX - x);
               }}
               onLostPointerCapture={() => setResizingDiff(false)}
               onDragStart={(event) => event.preventDefault()}
@@ -1049,7 +1226,9 @@ function App() {
                 event.preventDefault();
                 const width = listPanel.current?.offsetWidth;
                 if (width != null) {
-                  setListWidth(constrainListWidth(width + (event.key === "ArrowLeft" ? -20 : 20)));
+                  resizeList(graphOnly && event.key === "ArrowRight"
+                    ? graphThreshold + 20
+                    : width + (event.key === "ArrowLeft" ? -20 : 20));
                 }
               }}
             />
@@ -1065,7 +1244,7 @@ function App() {
                 {selection?.kind === "diff"
                   ? selection.path
                   : selection?.kind === "show"
-                    ? selection.hash.slice(0, 12)
+                    ? <code title={selection.hash}>{selection.hash.slice(0, 12)}</code>
                     : "Diff"}
               </strong>
               {selection?.kind === "diff" && (
@@ -1159,6 +1338,7 @@ function App() {
         <RepositoryPicker
           initialView={picker}
           recent={recent}
+          currentPath={repo?.root}
           busy={busy}
           error={error}
           onClose={() => {

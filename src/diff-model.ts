@@ -25,7 +25,8 @@ export function splitDiff(text: string) {
     const changes = hunk < 0 ? [] : patch.slice(hunk);
     return {
       path,
-      lines: patch,
+      metadata: hunk < 0 ? [] : header,
+      lines: hunk < 0 ? patch : changes,
       additions: changes.filter((line) => line.startsWith("+")).length,
       deletions: changes.filter((line) => line.startsWith("-")).length,
     };

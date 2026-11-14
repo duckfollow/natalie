@@ -7,11 +7,14 @@
   </defs>
   <rect x="3" y="3" width="122" height="122" rx="32" fill="url(#tile)"/>
   <rect x="4" y="4" width="120" height="120" rx="31" fill="none" stroke="#a99aee" stroke-opacity=".35" stroke-width="2"/>
-  <path d="M37 91V37L91 91V37" fill="none" stroke="#eee8ff" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
-  <g fill="#c7b7ff" stroke="#3d2c62" stroke-width="3">
-    <circle cx="37" cy="91" r="9"/>
-    <circle cx="37" cy="37" r="9"/>
-    <circle cx="91" cy="91" r="9"/>
-    <circle cx="91" cy="37" r="9" fill="#9de7f3"/>
+  <g fill="none" stroke="#eee8ff" stroke-width="2" stroke-linecap="round">
+    <path d="M37 91V37 M91 91V37"/>
+    <path d="M37 37L91 91" stroke-dasharray="7 5" stroke-dashoffset="2"/>
+  </g>
+  <g stroke="#3d2c62" stroke-width="1">
+    <circle cx="37" cy="91" r="13" fill="#A797F0"/>
+    <circle cx="37" cy="37" r="13" fill="#CBB8FF"/>
+    <circle cx="91" cy="91" r="12" fill="url(#tile)" stroke="#9AC9FF" stroke-width="3"/>
+    <circle cx="91" cy="37" r="13" fill="#8BE2D6"/>
   </g>
 </svg>

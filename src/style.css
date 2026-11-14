@@ -2116,3 +2116,13 @@ nav button[aria-pressed="true"] {
   border-color: var(--accent);
   background: var(--active);
 }
+
+.resolve-context-menu {
+  width: min(320px, calc(100vw - 16px));
+}
+.resolve-context-menu .graph-menu-heading code {
+  overflow-wrap: anywhere;
+}
+.resolve-context-menu > .resolve-option {
+  white-space: normal;
+}

@@ -560,12 +560,21 @@ function App() {
   const [selection, setSelection] = useState<Selection | null>(null);
   const [diff, setDiff] = useState("");
   const [loadingDiff, setLoadingDiff] = useState(false);
-  const [conflictFile, setConflictFile] = useState<Change | null>(null);
-  const conflictDialog = useRef<HTMLDialogElement>(null);
-  useEffect(() => {
-    const dialog = conflictDialog.current;
-    if (conflictFile && dialog && !dialog.open) dialog.showModal();
-  }, [conflictFile]);
+  const [conflictMenu, setConflictMenu] = useState<{ file: Change; x: number; y: number; trigger: HTMLButtonElement } | null>(null);
+  const conflictMenuRef = useRef<HTMLDivElement>(null);
+  const conflictFile = conflictMenu?.file;
+  useLayoutEffect(() => {
+    const menu = conflictMenuRef.current;
+    if (!conflictMenu || !menu) return;
+    menu.style.left = `${Math.max(8, Math.min(conflictMenu.x, window.innerWidth - menu.offsetWidth - 8))}px`;
+    menu.style.top = `${Math.max(8, Math.min(conflictMenu.y, window.innerHeight - menu.offsetHeight - 8))}px`;
+    menu.querySelector("button")?.focus({ preventScroll: true });
+    function dismiss(event: PointerEvent) {
+      if (!event.composedPath().includes(menu!)) setConflictMenu(null);
+    }
+    document.addEventListener("pointerdown", dismiss);
+    return () => document.removeEventListener("pointerdown", dismiss);
+  }, [conflictMenu]);
   const [discarding, setDiscarding] = useState<{ paths: string[]; mode: "file" | "selected" | "all" } | null>(null);
   const [discardSelection, setDiscardSelection] = useState<Set<string>>(() => new Set());
   const [message, setMessage] = useState("");
@@ -916,9 +925,15 @@ function App() {
                 }}
               />
               <button
+                onKeyDown={conflicting ? (event) => {
+                  if (busy || (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10"))) return;
+                  event.preventDefault();
+                  const bounds = event.currentTarget.getBoundingClientRect();
+                  setConflictMenu({ file: item, x: bounds.left, y: bounds.bottom, trigger: event.currentTarget });
+                } : undefined}
                 onContextMenu={conflicting ? (event) => {
                   event.preventDefault();
-                  if (!busy) setConflictFile(item);
+                  if (!busy) setConflictMenu({ file: item, x: event.clientX, y: event.clientY, trigger: event.currentTarget });
                 } : undefined}
                 className="file-name"
                 type="button"
@@ -965,9 +980,10 @@ function App() {
                 disabled={busy}
                 aria-label={`${inIndex ? "Unstage" : "Stage"} ${item.path}`}
                 title={inIndex ? "Unstage" : "Stage"}
-                onClick={() => {
+                onClick={(event) => {
                   if (conflicting) {
-                    setConflictFile(item);
+                    const bounds = event.currentTarget.getBoundingClientRect();
+                    setConflictMenu({ file: item, x: bounds.left, y: bounds.bottom, trigger: event.currentTarget });
                     return;
                   }
                   void update(
@@ -1766,19 +1782,19 @@ function App() {
           </div>
         </dialog>
       )}
-      {conflictFile && (
-        <dialog ref={conflictDialog} className="repo-picker repository-action-picker resolve-dialog" aria-labelledby="resolve-conflict-title"
-          onClose={() => setConflictFile(null)}>
-          <header>
-            <TriangleAlert size={18} aria-hidden="true" />
-            <h2 id="resolve-conflict-title">Resolve conflict</h2>
-            <button type="button" className="repo-picker-close" aria-label="Close" onClick={() => conflictDialog.current?.close()}>×</button>
-          </header>
-          <div className="repo-picker-content git-action-form">
-            <div className="resolve-file">
-              <TriangleAlert size={16} aria-hidden="true" />
-              <code>{conflictFile.path}</code>
-            </div>
+      {conflictMenu && conflictFile && createPortal(
+        <div ref={conflictMenuRef} className="graph-context-menu diff-commit-menu-items resolve-context-menu"
+          role="group" aria-label="Resolve conflict"
+          onKeyDown={(event) => {
+            if (event.key !== "Escape") return;
+            event.preventDefault();
+            conflictMenu.trigger.focus({ preventScroll: true });
+            setConflictMenu(null);
+          }}>
+          <div className="graph-menu-heading">
+            <strong>Resolve conflict</strong>
+            <code>{conflictFile.path}</code>
+          </div>
             {([
               ["current", "Keep current", `Use the entire file from ${repo?.branch ?? "the current branch"}, then stage it.`, GitBranch, conflictFile.index === "D"],
               ["incoming", "Accept incoming", "Use the entire file from the incoming commit, then stage it.", Download, conflictFile.worktree === "D"],
@@ -1786,7 +1802,8 @@ function App() {
             ] as const).map(([resolution, label, description, Icon, deletes]) => (
               <button key={resolution} className="resolve-option" type="button" disabled={busy} onClick={() => {
                 const { path } = conflictFile;
-                conflictDialog.current?.close();
+                conflictMenu.trigger.focus({ preventScroll: true });
+                setConflictMenu(null);
                 void update(async () => {
                   if (resolution !== "mark_resolved") {
                     const approved = await confirm(
@@ -1809,8 +1826,8 @@ function App() {
                 <ChevronRight size={15} aria-hidden="true" />
               </button>
             ))}
-          </div>
-        </dialog>
+        </div>,
+        document.body,
       )}
       {cherryPick && repo && (
         <CherryPickDialog

@@ -2126,3 +2126,9 @@ nav button[aria-pressed="true"] {
 .resolve-context-menu > .resolve-option {
   white-space: normal;
 }
+
+.commit-conflict-help {
+  margin: 0;
+  color: var(--error);
+  font-size: 12px;
+}

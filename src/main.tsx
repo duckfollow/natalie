@@ -1453,7 +1453,7 @@ function App() {
                   className="commit-form"
                   onSubmit={(event) => {
                     event.preventDefault();
-                    if (!staged.length || !message.trim()) return;
+                    if (busy || conflicts.length || !staged.length || !message.trim()) return;
                     void update(
                       () =>
                         repository<Snapshot>(root, { kind: "commit", message }),
@@ -1478,13 +1478,19 @@ function App() {
                   />
                   <button
                     className="primary"
-                    disabled={busy || !staged.length || !message.trim()}
+                    disabled={busy || conflicts.length > 0 || !staged.length || !message.trim()}
+                    aria-describedby={conflicts.length ? "commit-conflict-help" : undefined}
                   >
                     <GitCommitHorizontal size={15} aria-hidden="true" />
                     {staged.length
                       ? `Commit ${staged.length} staged ${staged.length === 1 ? "file" : "files"}`
                       : "Commit"}
                   </button>
+                  {conflicts.length > 0 && (
+                    <p className="commit-conflict-help" id="commit-conflict-help" role="status">
+                      Resolve {conflicts.length} {conflicts.length === 1 ? "conflict" : "conflicts"} before committing.
+                    </p>
+                  )}
                 </form>
               </>
             ) : (

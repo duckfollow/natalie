@@ -504,12 +504,13 @@ nav span,
   color: var(--accent);
 }
 .diff-panel {
+  container: diff-panel / inline-size;
   min-width: 0;
   min-height: 0;
   display: flex;
   flex-direction: column;
 }
-.diff-panel header {
+.diff-panel > header {
   display: flex;
   gap: 10px;
   align-items: center;
@@ -517,12 +518,12 @@ nav span,
   border-bottom: 1px solid var(--line);
   font-size: 12px;
 }
-.diff-panel header strong {
+.diff-panel > header strong {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.diff-panel header span {
+.diff-panel > header span {
   color: var(--muted);
   white-space: nowrap;
 }
@@ -609,7 +610,7 @@ nav button,
 .branch-pill svg,
 .banner svg,
 .file-name svg,
-.diff-panel header svg {
+.diff-panel > header svg {
   flex-shrink: 0;
 }
 .banner {
@@ -717,10 +718,10 @@ nav button[aria-pressed="true"] {
   font-weight: 600;
 }
 .commit-form label svg,
-.diff-panel header svg {
+.diff-panel > header svg {
   color: var(--accent);
 }
-.diff-panel header .diff-context {
+.diff-panel > header .diff-context {
   margin-inline-start: auto;
   background: var(--active);
   padding: 3px 7px;
@@ -765,14 +766,15 @@ nav button[aria-pressed="true"] {
   color: var(--muted);
   font-size: 12px;
 }
-.diff-file-toolbar select {
-  max-width: 65%;
-  padding: 5px 8px;
-  border: 1px solid var(--line);
-  border-radius: 5px;
-  background: var(--panel);
-  color: inherit;
+.diff-file-jump {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
   font: inherit;
+}
+.diff-jump-dialog .repo-picker-content {
+  padding-top: 12px;
 }
 .diff-file-scroll {
   flex: 1;
@@ -1154,6 +1156,17 @@ nav button[aria-pressed="true"] {
   background: var(--active);
   color: var(--accent);
 }
+.checked-out-dot {
+  visibility: hidden;
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.current-branch > .checked-out-dot {
+  visibility: visible;
+}
 .repo-nav-items .current-branch {
   background: var(--active);
   color: var(--accent);
@@ -1277,16 +1290,62 @@ nav button[aria-pressed="true"] {
 .diff-commit-actions {
   display: flex;
   min-width: 0;
-  overflow-x: auto;
   gap: 5px;
   margin-inline-start: auto;
 }
-.diff-commit-actions button {
+.diff-commit-actions button,
+.diff-commit-menu-items button {
   display: inline-flex;
   flex: none;
   align-items: center;
   gap: 5px;
   white-space: nowrap;
+}
+.diff-commit-menu {
+  display: none;
+  position: relative;
+  flex: none;
+  margin-inline-start: auto;
+}
+.diff-commit-menu > summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  cursor: pointer;
+  list-style: none;
+}
+.diff-commit-menu > summary::-webkit-details-marker {
+  display: none;
+}
+.diff-commit-menu[open] > summary svg {
+  transform: rotate(90deg);
+}
+.diff-commit-menu-items {
+  position: absolute;
+  z-index: 5;
+  inset: calc(100% + 5px) 0 auto auto;
+  display: grid;
+  gap: 4px;
+  min-width: 155px;
+  padding: 5px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--toolbar);
+  box-shadow: 0 8px 24px var(--backdrop);
+}
+.diff-commit-menu-items button {
+  justify-content: flex-start;
+}
+@container diff-panel (max-width: 770px) {
+  .diff-commit-actions {
+    display: none;
+  }
+  .diff-commit-menu {
+    display: block;
+  }
 }
 .cherry-pick-status {
   align-items: center;
@@ -1742,4 +1801,318 @@ nav button[aria-pressed="true"] {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.discard-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px;
+  border-bottom: 1px solid var(--line);
+}
+.discard-toolbar button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+}
+.discard-toolbar button:not(:disabled) {
+  color: var(--error);
+}
+.discard-checkbox {
+  flex: none;
+  margin-inline-start: 6px;
+  accent-color: var(--accent);
+}
+
+.commit-dot > .commit-head-crown {
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  display: grid;
+  place-items: center;
+  padding: 0 2px;
+  transform: translateX(-50%);
+  color: #f4cc83;
+  background: var(--panel);
+}
+.commit-head-crown svg {
+  width: auto;
+  height: auto;
+}
+:root[data-theme="light"] .commit-dot > .commit-head-crown {
+  color: #79510c;
+}
+
+.history button[data-head="true"] {
+  --head-gold: #f4cc83;
+}
+:root[data-theme="light"] .history button[data-head="true"] {
+  --head-gold: #79510c;
+}
+.history button[data-head="true"] .commit-dot::after {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  border: 2px solid var(--head-gold);
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+.cherry-picker h2 {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.cherry-picker h2 strong {
+  color: var(--accent);
+}
+.repo-picker-content .cherry-pick-review {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.cherry-pick-review:has(input:checked) {
+  background: var(--active);
+}
+.cherry-pick-review > span {
+  display: grid;
+  gap: 4px;
+}
+.cherry-pick-review strong {
+  color: var(--text);
+}
+.cherry-pick-review small {
+  font-size: 11px;
+}
+.repo-picker-content .cherry-pick-review input {
+  width: auto;
+  accent-color: var(--accent);
+}
+
+.cherry-preview {
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.cherry-preview h3 {
+  margin: 0 0 10px;
+  font-size: 12px;
+}
+.cherry-preview-graph {
+  display: grid;
+  font-size: 12px;
+}
+.cherry-preview-graph > div {
+  position: relative;
+  display: grid;
+  gap: 4px;
+  padding: 8px 0 8px 26px;
+  overflow-wrap: anywhere;
+  line-height: 16px;
+}
+.cherry-preview-graph > div::before,
+.cherry-preview-graph > .cherry-preview-next::after {
+  content: "";
+  position: absolute;
+  left: 8px;
+  transform: translateX(-50%);
+}
+.cherry-preview-graph > div::before {
+  z-index: 1;
+  top: 16px;
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--accent);
+  border-radius: 50%;
+  background: var(--accent);
+  transform: translate(-50%, -50%);
+}
+.cherry-preview-graph > .cherry-preview-next::before {
+  background: var(--surface);
+}
+.cherry-preview-graph > .cherry-preview-next::after {
+  top: 16px;
+  bottom: -16px;
+  border-left: 2px dashed var(--accent);
+  opacity: 0.55;
+}
+.cherry-preview-graph small {
+  color: var(--muted);
+}
+
+.pending-pick-marker {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+  padding: 2px 4px;
+  border: 1px dashed currentColor;
+  border-radius: 4px;
+  color: var(--status-added);
+  background: var(--surface);
+  font-size: 10px;
+}
+.workspace[data-list="graph"] .pending-pick-marker {
+  position: absolute;
+  inset-inline-end: 4px;
+  top: 2px;
+}
+
+.pending-pick-target {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--active);
+  color: var(--accent);
+}
+.pending-pick-target svg {
+  flex: none;
+}
+.pending-pick-target div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.pending-pick-target small,
+.pending-pick-sources code {
+  color: var(--muted);
+}
+.pending-pick-dialog h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 13px;
+}
+.pending-pick-dialog h3 span,
+.pending-pick-order {
+  padding: 2px 6px;
+  border-radius: 5px;
+  background: var(--active);
+  color: var(--accent);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.pending-pick-sources {
+  max-height: min(280px, 40vh);
+  overflow: auto;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  font-size: 12px;
+}
+.pending-pick-sources li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  padding: 10px 12px;
+  overflow-wrap: anywhere;
+}
+.pending-pick-sources li + li {
+  border-top: 1px solid var(--line);
+}
+.pending-pick-sources code {
+  display: block;
+  margin-top: 4px;
+}
+
+.graph-context-menu {
+  position: fixed;
+  inset: 0 auto auto 0;
+  z-index: 30;
+}
+
+.graph-context-menu {
+  width: min(230px, calc(100vw - 8px));
+  gap: 2px;
+}
+.graph-menu-heading {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 7px 8px;
+  border-bottom: 1px solid var(--line);
+  font-size: 11px;
+}
+.graph-menu-heading strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.graph-menu-heading code {
+  color: var(--muted);
+}
+.graph-context-menu > button {
+  min-height: 30px;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  font-size: 12px;
+}
+.graph-context-menu > button:is(:hover, :focus-visible):not(:disabled) {
+  background: var(--active);
+}
+.graph-context-menu > .commit-reset-action {
+  margin-top: 3px;
+  border-top: 1px solid var(--line);
+  color: var(--error);
+}
+
+.conflict-group h2,
+.file-name .conflict-file-icon {
+  color: var(--error);
+}
+
+.resolve-file,
+.resolve-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  overflow-wrap: anywhere;
+}
+.resolve-file {
+  color: var(--error);
+  font-size: 12px;
+}
+.resolve-option {
+  text-align: left;
+}
+.resolve-option > svg {
+  flex: none;
+  color: var(--accent);
+}
+.resolve-file > svg {
+  flex: none;
+}
+.resolve-option > span {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  gap: 4px;
+}
+.resolve-option small {
+  color: var(--muted);
+}
+.resolve-option:is(:hover, :focus-visible):not(:disabled) {
+  border-color: var(--accent);
+  background: var(--active);
 }

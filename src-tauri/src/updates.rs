@@ -104,6 +104,18 @@ pub async fn open_release_page(url: Option<String>) -> Result<(), String> {
     }
     open_browser(url).await
 }
+#[tauri::command]
+pub async fn open_related_project(project: String) -> Result<(), String> {
+    let url = match project.as_str() {
+        "dum-e" => "https://github.com/duckfollow/dum-e",
+        "ultron" => "https://github.com/duckfollow/ultron",
+        "u" => "https://github.com/duckfollow/u",
+        _ => return Err("Unknown project.".into()),
+    };
+    open_browser(url.into())
+        .await
+        .map_err(|_| "Could not open the project in your browser.".into())
+}
 async fn open_browser(url: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         #[cfg(target_os = "macos")]

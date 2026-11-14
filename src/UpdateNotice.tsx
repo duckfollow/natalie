@@ -1,10 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { getVersion } from "@tauri-apps/api/app";
-import { ArrowUpCircle, CheckCircle2, ExternalLink, RefreshCw, X } from "lucide-react";
+import { ArrowUpCircle, CheckCircle2, Database, ExternalLink, Terminal, Workflow, RefreshCw, X } from "lucide-react";
 import { invoke as api, isTauri } from "@tauri-apps/api/core";
 import { version as buildVersion } from "../src-tauri/tauri.conf.json";
 import "./update-notice.css";
+
+const projects = [
+  { id: "dum-e", name: "DUM-E", description: "PostgreSQL and SQLite workspace", Icon: Database },
+  { id: "ultron", name: "Ultron", description: "macOS terminal with split panes and SSH", Icon: Terminal },
+  { id: "u", name: "U", description: "Local API workbench", Icon: Workflow },
+];
 
 const desktop = isTauri();
 interface AvailableUpdate {
@@ -92,11 +98,22 @@ export function UpdateNotice() {
       if (mounted.current) setOpening(false);
     }
   }
+  async function openProject(project: string) {
+    setError("");
+    try {
+      await api("open_related_project", { project });
+    } catch (error) {
+      if (mounted.current) setError(String(error));
+    }
+  }
+
   const status = checking
     ? "Checking for updates…"
     : update
       ? "A new version is available"
-      : checkedAt
+      : error
+        ? "Update check unavailable"
+        : checkedAt
         ? "You’re up to date"
         : "Ready to check for updates";
   return (
@@ -156,7 +173,7 @@ export function UpdateNotice() {
               </p>
             )}
             <section className="updates-hero" aria-live="polite">
-              <div className="mark" aria-hidden="true">N</div>
+              <img className="updates-mark" src="/natalie-mark.svg" alt="" />
               <div>
                 <h3>{status}</h3>
                 <p>
@@ -186,7 +203,7 @@ export function UpdateNotice() {
                 {checking ? "Checking…" : "Check for updates"}
               </button>
               <button
-                className="updates-action"
+                className={`updates-action${update ? " primary" : ""}`}
                 disabled={!desktop || opening}
                 onClick={() => void openRelease()}
               >
@@ -213,6 +230,20 @@ export function UpdateNotice() {
                 Last checked {new Date(checkedAt).toLocaleString()}.
               </small>
             )}
+            <section className="updates-projects" aria-labelledby="updates-projects-title">
+              <h3 id="updates-projects-title">More apps from Duckfollow</h3>
+              <ul>
+                {projects.map(({ id, name, description, Icon }) => (
+                  <li key={id}>
+                    <button type="button" disabled={!desktop} onClick={() => void openProject(id)}>
+                      <Icon size={17} aria-hidden="true" />
+                      <span><strong>{name}</strong><small>{description}</small></span>
+                      <ExternalLink size={13} aria-hidden="true" />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </section>
           </div>
         </dialog>,
         document.body,

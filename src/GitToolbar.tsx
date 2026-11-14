@@ -14,11 +14,13 @@ import {
   Save,
   X,
   Settings2,
+  Tag,
 } from "lucide-react";
 
 export type GitAction =
   | { kind: "fetch" | "pull" | "push" }
-  | { kind: "branch"; name: string }
+  | { kind: "branch"; name: string; start?: string }
+  | { kind: "tag"; name: string; hash: string }
   | { kind: "merge"; branch: string }
   | { kind: "stash"; message: string }
   | { kind: "set_origin"; url: string };
@@ -40,6 +42,9 @@ export function GitToolbar({
   busy,
   branches,
   currentBranch,
+  tagCommit,
+  branchCommit,
+  onBranchCommitClose,
   originUrl,
   ahead,
   behind,
@@ -50,6 +55,9 @@ export function GitToolbar({
   busy: boolean;
   branches: string[];
   currentBranch: string;
+  tagCommit: string | null;
+  branchCommit: string | null;
+  onBranchCommitClose: () => void;
   originUrl: string | null;
   ahead: number | null;
   behind: number | null;
@@ -57,8 +65,14 @@ export function GitToolbar({
   onCommit: () => void;
   onAction: (action: GitAction) => void;
 }) {
-  const [prompt, setPrompt] = useState<Prompt | null>(null);
+  const [toolbarPrompt, setPrompt] = useState<Prompt | null>(null);
   const [value, setValue] = useState("");
+  const prompt = tagCommit ? "Tag" : branchCommit ? "Branch" : toolbarPrompt;
+  function closePrompt() {
+    setValue("");
+    setPrompt(null);
+    onBranchCommitClose();
+  }
   const dialog = useRef<HTMLDialogElement>(null);
   const mergeBranches = branches.filter((branch) => branch !== currentBranch);
   useEffect(() => {
@@ -131,15 +145,16 @@ export function GitToolbar({
           ref={dialog}
           className="repo-picker repository-action-picker"
           aria-labelledby="git-action-title"
-          onCancel={() => setPrompt(null)}
+          onCancel={closePrompt}
         >
           <header>
             {prompt === "Origin" && <Cloud size={20} aria-hidden="true" />}
+            {prompt === "Tag" && <Tag size={20} aria-hidden="true" />}
             {prompt === "Branch" && <GitBranch size={20} aria-hidden="true" />}
             {prompt === "Merge" && <GitMerge size={20} aria-hidden="true" />}
             {prompt === "Stash" && <Layers3 size={20} aria-hidden="true" />}
             <h2 id="git-action-title">
-              {prompt === "Branch"
+              {prompt === "Tag" ? "Create tag" : prompt === "Branch"
                 ? "Create branch"
                 : prompt === "Merge"
                   ? `Merge into ${currentBranch}`
@@ -147,7 +162,7 @@ export function GitToolbar({
                     ? (originUrl == null ? "Add remote origin" : "Change remote origin")
                     : "Stash changes"}
             </h2>
-            <button type="button" className="repo-picker-close" aria-label="Close" onClick={() => setPrompt(null)}>
+            <button type="button" className="repo-picker-close" aria-label="Close" onClick={closePrompt}>
               <X size={17} aria-hidden="true" />
             </button>
           </header>
@@ -155,15 +170,17 @@ export function GitToolbar({
             className="repo-picker-content git-action-form"
             onSubmit={(event) => {
               event.preventDefault();
+              if (prompt === "Tag" && tagCommit)
+                onAction({ kind: "tag", name: value.trim(), hash: tagCommit });
               if (prompt === "Branch")
-                onAction({ kind: "branch", name: value.trim() });
+                onAction({ kind: "branch", name: value.trim(), start: branchCommit ?? undefined });
               if (prompt === "Merge")
                 onAction({ kind: "merge", branch: value });
               if (prompt === "Stash")
                 onAction({ kind: "stash", message: value });
               if (prompt === "Origin")
                 onAction({ kind: "set_origin", url: value.trim() });
-              setPrompt(null);
+              closePrompt();
             }}
           >
             {prompt === "Merge" ? (
@@ -207,17 +224,17 @@ export function GitToolbar({
                 </span>
                 <span id="origin-url-help">Use an HTTPS URL, SSH address, or local repository path.</span>
               </label>
-            ) : prompt === "Branch" ? (
+            ) : prompt === "Branch" || prompt === "Tag" ? (
               <>
                 <label>
-                  Branch name
+                  {tagCommit ? "Tag name" : "Branch name"}
                   <span className="repository-action-field">
                     <GitBranch size={15} aria-hidden="true" />
                     <input
                       autoFocus
                       value={value}
                       onChange={(event) => setValue(event.target.value)}
-                      placeholder="feature/my-branch"
+                      placeholder={tagCommit ? "v1.0.0" : "feature/my-branch"}
                       aria-describedby="branch-start-point"
                       required
                       spellCheck={false}
@@ -226,7 +243,7 @@ export function GitToolbar({
                   </span>
                 </label>
                 <p id="branch-start-point" className="branch-start-point">
-                  Starts from <code>{currentBranch}</code>
+                  Starts from <code title={tagCommit ?? branchCommit ?? undefined}>{(tagCommit ?? branchCommit)?.slice(0, 12) ?? currentBranch}</code>
                 </p>
               </>
             ) : (
@@ -251,7 +268,7 @@ export function GitToolbar({
               <p id="stash-scope">Includes staged and unstaged changes, plus untracked files.</p>
             )}
             <footer>
-              <button type="button" onClick={() => setPrompt(null)}>
+              <button type="button" onClick={closePrompt}>
                 Cancel
               </button>
               <button
@@ -262,7 +279,9 @@ export function GitToolbar({
                   ? originUrl == null
                     ? <><Plus size={14} aria-hidden="true" /> Add origin</>
                     : <><Save size={14} aria-hidden="true" /> Save changes</>
-                  : prompt === "Branch"
+                  : prompt === "Tag"
+                    ? <><Tag size={14} aria-hidden="true" /> Create tag</>
+                    : prompt === "Branch"
                     ? <><Plus size={14} aria-hidden="true" /> Create branch</>
                     : prompt === "Merge"
                       ? <><GitMerge size={14} aria-hidden="true" /> Merge branches</>

@@ -61,7 +61,7 @@ fn run(root: &Path, args: &[&str]) -> Result<Output, String> {
     // Git's own pathspec patterns when cleaning up untracked files.
     if matches!(
         args.first().copied(),
-        Some("diff" | "add" | "restore" | "rm" | "clean" | "ls-tree")
+        Some("diff" | "add" | "restore" | "rm" | "clean" | "ls-tree" | "ls-files")
     ) {
         command.arg("--literal-pathspecs");
     }
@@ -253,6 +253,14 @@ fn snapshot(folder: &Path) -> Result<Snapshot, String> {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ConflictResolution {
+    Current,
+    Incoming,
+    MarkResolved,
+}
+
+#[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum Action {
     Open {
@@ -268,6 +276,10 @@ enum Action {
         staged: bool,
         untracked: bool,
     },
+    ResolveConflict {
+        path: String,
+        resolution: ConflictResolution,
+    },
     Stage {
         path: String,
     },
@@ -276,6 +288,9 @@ enum Action {
     },
     Discard {
         path: String,
+    },
+    DiscardMany {
+        paths: Vec<String>,
     },
     Commit {
         message: String,
@@ -288,9 +303,20 @@ enum Action {
     Push,
     Branch {
         name: String,
+        start: Option<String>,
+    },
+    Tag {
+        name: String,
+        hash: String,
+    },
+    DeleteTag {
+        name: String,
     },
     DeleteBranch {
         branch: String,
+    },
+    CheckoutCommit {
+        hash: String,
     },
     CheckoutBranch {
         branch: String,
@@ -308,6 +334,8 @@ enum Action {
     CherryPick {
         hash: String,
         mainline: Option<usize>,
+        #[serde(default)]
+        no_commit: bool,
     },
     ResetSoft {
         hash: String,
@@ -332,6 +360,14 @@ enum Response {
     History(Vec<Commit>),
 }
 
+fn validate_commit_hash(hash: &str) -> Result<(), String> {
+    if matches!(hash.len(), 40 | 64) && hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        Ok(())
+    } else {
+        Err("Invalid commit hash.".into())
+    }
+}
+
 fn checkout_branch(root: &Path, branch: &str) -> Result<(), String> {
     let reference = format!("refs/heads/{branch}");
     git(root, &["check-ref-format", &reference])?;
@@ -346,6 +382,58 @@ fn checkout_branch(root: &Path, branch: &str) -> Result<(), String> {
             branch,
         ],
     )?;
+    Ok(())
+}
+
+fn discard_paths(root: &Path, paths: &[String]) -> Result<(), String> {
+    let state = snapshot(root)?;
+    let mut changes = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for path in paths {
+        if !seen.insert(path) {
+            continue;
+        }
+        let change = state
+            .changes
+            .iter()
+            .find(|change| &change.path == path)
+            .ok_or("This file has no changes to discard. Refresh and try again.")?;
+        if Path::new(path)
+            .components()
+            .any(|part| !matches!(part, std::path::Component::Normal(_)))
+            || state.submodules.iter().any(|module| module == path)
+            || change.index == 'U'
+            || change.worktree == 'U'
+            || (change.index == 'A' && change.worktree == 'A')
+            || (change.index == 'D' && change.worktree == 'D')
+        {
+            return Err("Resolve conflicts and submodule changes manually.".into());
+        }
+        changes.push(change);
+    }
+    for change in changes {
+        let path = change.path.as_str();
+        let in_head = git(root, &["ls-tree", "-z", "HEAD", "--", path])
+            .map(|entry| !entry.is_empty())
+            .unwrap_or(false);
+        if in_head {
+            git(
+                root,
+                &[
+                    "restore",
+                    "--source=HEAD",
+                    "--staged",
+                    "--worktree",
+                    "--",
+                    path,
+                ],
+            )?;
+        } else if change.index != '?' && change.index != ' ' {
+            git(root, &["rm", "-f", "--", path])?;
+        } else {
+            git(root, &["clean", "-f", "--", path])?;
+        }
+    }
     Ok(())
 }
 
@@ -409,15 +497,11 @@ fn perform(root: Option<String>, action: Action) -> Result<Response, String> {
             output(run(root, &args)?, untracked).map(Response::Text)
         }
         Action::History { hash } => {
-            if !matches!(hash.len(), 40 | 64) || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
-                return Err("Invalid commit hash.".into());
-            }
+            validate_commit_hash(&hash)?;
             history(root, &[&hash]).map(Response::History)
         }
         Action::Show { hash } => {
-            if !matches!(hash.len(), 40 | 64) || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
-                return Err("Invalid commit hash.".into());
-            }
+            validate_commit_hash(&hash)?;
             git(
                 root,
                 &[
@@ -434,6 +518,36 @@ fn perform(root: Option<String>, action: Action) -> Result<Response, String> {
         }
         action => {
             match action {
+                Action::ResolveConflict { path, resolution } => {
+                    let entries = git(root, &["ls-files", "--unmerged", "-z", "--", &path])?;
+                    let stages: Vec<_> = entries
+                        .split('\0')
+                        .filter_map(|entry| {
+                            let (metadata, name) = entry.split_once('\t')?;
+                            (name == path).then_some(metadata)
+                        })
+                        .collect();
+                    if stages.is_empty() {
+                        return Err("This file no longer has a conflict.".into());
+                    }
+                    if stages.iter().any(|entry| entry.starts_with("160000 ")) {
+                        return Err("Resolve submodule conflicts manually.".into());
+                    }
+                    let side = match resolution {
+                        ConflictResolution::Current => Some(("--ours", " 2")),
+                        ConflictResolution::Incoming => Some(("--theirs", " 3")),
+                        ConflictResolution::MarkResolved => None,
+                    };
+                    if let Some((flag, stage)) = side {
+                        if stages.iter().any(|entry| entry.ends_with(stage)) {
+                            git(root, &["restore", "--worktree", flag, "--", &path])?;
+                        } else {
+                            git(root, &["rm", "-f", "--", &path])?;
+                            return snapshot(root).map(Response::Snapshot);
+                        }
+                    }
+                    git(root, &["add", "--", &path])?;
+                }
                 Action::Stage { path } => {
                     git(root, &["add", "--", &path])?;
                 }
@@ -447,45 +561,8 @@ fn perform(root: Option<String>, action: Action) -> Result<Response, String> {
                         git(root, &["rm", "--cached", "-f", "--", &path])?;
                     }
                 }
-                Action::Discard { path } => {
-                    let state = snapshot(root)?;
-                    let change = state
-                        .changes
-                        .iter()
-                        .find(|change| change.path == path)
-                        .ok_or("This file has no changes to discard.")?;
-                    if Path::new(&path)
-                        .components()
-                        .any(|part| !matches!(part, std::path::Component::Normal(_)))
-                        || state.submodules.contains(&path)
-                        || change.index == 'U'
-                        || change.worktree == 'U'
-                        || (change.index == 'A' && change.worktree == 'A')
-                        || (change.index == 'D' && change.worktree == 'D')
-                    {
-                        return Err("Resolve conflicts and submodule changes manually.".into());
-                    }
-                    let in_head = git(root, &["ls-tree", "-z", "HEAD", "--", &path])
-                        .map(|entry| !entry.is_empty())
-                        .unwrap_or(false);
-                    if in_head {
-                        git(
-                            root,
-                            &[
-                                "restore",
-                                "--source=HEAD",
-                                "--staged",
-                                "--worktree",
-                                "--",
-                                &path,
-                            ],
-                        )?;
-                    } else if change.index != '?' && change.index != ' ' {
-                        git(root, &["rm", "-f", "--", &path])?;
-                    } else {
-                        git(root, &["clean", "-f", "--", &path])?;
-                    }
-                }
+                Action::Discard { path } => discard_paths(root, &[path])?,
+                Action::DiscardMany { paths } => discard_paths(root, &paths)?,
                 Action::Commit { message } => {
                     if message.trim().is_empty() {
                         return Err("Enter a commit message.".into());
@@ -513,8 +590,27 @@ fn perform(root: Option<String>, action: Action) -> Result<Response, String> {
                 Action::Push => {
                     git(root, &["push"])?;
                 }
-                Action::Branch { name } => {
-                    git(root, &["branch", "--", &name])?;
+                Action::Branch { name, start } => {
+                    let mut args = vec!["branch", "--", &name];
+                    if let Some(hash) = start.as_deref() {
+                        validate_commit_hash(hash)?;
+                        args.push(hash);
+                    }
+                    git(root, &args)?;
+                }
+                Action::CheckoutCommit { hash } => {
+                    validate_commit_hash(&hash)?;
+                    git(
+                        root,
+                        &["switch", "--detach", "--no-overwrite-ignore", "--", &hash],
+                    )?;
+                }
+                Action::Tag { name, hash } => {
+                    validate_commit_hash(&hash)?;
+                    git(root, &["tag", "--no-sign", "--", &name, &hash])?;
+                }
+                Action::DeleteTag { name } => {
+                    git(root, &["tag", "--delete", "--", &name])?;
                 }
                 Action::DeleteBranch { branch } => {
                     git(root, &["branch", "--delete", "--", &branch])?;
@@ -567,7 +663,11 @@ fn perform(root: Option<String>, action: Action) -> Result<Response, String> {
                     }
                     git(root, &args)?;
                 }
-                Action::CherryPick { hash, mainline } => {
+                Action::CherryPick {
+                    hash,
+                    mainline,
+                    no_commit,
+                } => {
                     if !matches!(hash.len(), 40 | 64)
                         || !hash.bytes().all(|b| b.is_ascii_hexdigit())
                     {
@@ -575,6 +675,9 @@ fn perform(root: Option<String>, action: Action) -> Result<Response, String> {
                     }
                     let parent = mainline.map(|parent| parent.to_string());
                     let mut args = vec!["cherry-pick"];
+                    if no_commit {
+                        args.push("--no-commit");
+                    }
                     if let Some(parent) = parent.as_deref() {
                         args.extend(["--mainline", parent]);
                     }
@@ -654,7 +757,8 @@ fn main() {
             git_available,
             install_command_line_tools,
             updates::check_for_updates,
-            updates::open_release_page
+            updates::open_release_page,
+            updates::open_related_project
         ])
         .run(tauri::generate_context!())
         .expect("Natalie could not start");
@@ -791,6 +895,21 @@ mod tests {
         };
         assert!(committed.changes.is_empty());
         assert_eq!(committed.commits[0].subject, "First commit");
+        std::fs::write(folder.join("bulk-one.txt"), "one").unwrap();
+        std::fs::write(folder.join("bulk-two.txt"), "two").unwrap();
+        assert!(discard_paths(folder, &["bulk-one.txt".into(), "../outside.txt".into()]).is_err());
+        assert!(folder.join("bulk-one.txt").exists());
+        discard_paths(
+            folder,
+            &[
+                "bulk-one.txt".into(),
+                "bulk-two.txt".into(),
+                "bulk-one.txt".into(),
+            ],
+        )
+        .unwrap();
+        assert!(!folder.join("bulk-one.txt").exists());
+        assert!(!folder.join("bulk-two.txt").exists());
         // Discard only the requested literal path, including staged edits.
         std::fs::write(folder.join("a [literal].txt"), "staged edit\n").unwrap();
         git(folder, &["add", "--", "a [literal].txt"]).unwrap();
@@ -967,6 +1086,31 @@ mod tests {
         };
         assert_eq!(local.branch, "main");
         assert_eq!(local.head, committed.head);
+        let hash = remote.hash.clone();
+        let Response::Snapshot(detached) = perform(
+            Some(local.root.clone()),
+            Action::CheckoutCommit { hash: hash.clone() },
+        )
+        .unwrap() else {
+            panic!("Expected detached checkout snapshot");
+        };
+        assert_eq!(detached.branch, "Detached HEAD");
+        assert_eq!(detached.head.as_deref(), Some(hash.as_str()));
+        perform(
+            Some(local.root.clone()),
+            Action::Branch {
+                name: "from-detached".into(),
+                start: Some(hash.clone()),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            git(folder, &["rev-parse", "refs/heads/from-detached"])
+                .unwrap()
+                .trim(),
+            hash
+        );
+        checkout_branch(folder, "main").unwrap();
         let delete = |branch: &str| {
             perform(
                 Some(local.root.clone()),

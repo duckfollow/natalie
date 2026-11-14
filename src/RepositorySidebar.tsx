@@ -68,6 +68,7 @@ export function RepositorySidebar({
   onRemoteBranch,
   onCheckoutBranch,
   onDeleteBranch,
+  onDeleteTag,
   busy,
   stashes,
   submodules,
@@ -84,6 +85,7 @@ export function RepositorySidebar({
   remote_branches: Reference[];
   historyBranch: string | null;
   onRemoteBranch: (ref: Reference) => void;
+  onDeleteTag: (tag: string) => void;
   onDeleteBranch: (branch: string) => void;
   onCheckoutBranch: (branch: string, remote?: string) => void;
   busy: boolean;
@@ -93,6 +95,7 @@ export function RepositorySidebar({
   onCommit: (hash: string) => void;
 }) {
   const [menu, setMenu] = useState<{
+    tag: boolean;
     remote?: string;
     branch: string;
     x: number;
@@ -134,9 +137,11 @@ export function RepositorySidebar({
     branch: string,
     x: number,
     y: number,
+    tag = false,
   ) {
     setMenu({
       trigger,
+      tag,
       remote,
       branch,
       x,
@@ -150,7 +155,7 @@ export function RepositorySidebar({
     const group = slash < 0 ? "" : ref.name.slice(0, slash);
     groups.set(group, [...(groups.get(group) ?? []), ref]);
   }
-  const refButton = (ref: Reference, label = ref.name, current = false, activate = () => onCommit(ref.hash), checkout?: { branch: string; remote?: string }) => (
+  const refButton = (ref: Reference, label = ref.name, current = false, activate = () => onCommit(ref.hash), checkout?: { branch: string; remote?: string; tag?: boolean }) => (
     <button
       type="button"
       key={ref.name}
@@ -162,15 +167,16 @@ export function RepositorySidebar({
       aria-haspopup={checkout ? "menu" : undefined}
       onContextMenu={checkout ? (event: MouseEvent<HTMLButtonElement>) => {
         event.preventDefault();
-        openCheckoutMenu(event.currentTarget, checkout.remote, checkout.branch, event.clientX, event.clientY);
+        openCheckoutMenu(event.currentTarget, checkout.remote, checkout.branch, event.clientX, event.clientY, checkout.tag);
       } : undefined}
       onKeyDown={checkout ? (event) => {
         if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
         event.preventDefault();
         const bounds = event.currentTarget.getBoundingClientRect();
-        openCheckoutMenu(event.currentTarget, checkout.remote, checkout.branch, bounds.left, bounds.bottom);
+        openCheckoutMenu(event.currentTarget, checkout.remote, checkout.branch, bounds.left, bounds.bottom, checkout.tag);
       } : undefined}
     >
+      {checkout && !checkout.tag && !checkout.remote && <span className="checked-out-dot" aria-hidden="true" />}
       <span className="repo-reference-name">{label}</span>
     </button>
   );
@@ -251,7 +257,7 @@ export function RepositorySidebar({
       </Section>
       <Section onExpand={expandSection} label="Tags" icon={<Tag size={15} />}>
         {tags.length ? (
-          tags.map((ref) => refButton(ref))
+          tags.map((ref) => refButton(ref, ref.name, false, undefined, { branch: ref.name, tag: true }))
         ) : (
           <small>No tags</small>
         )}
@@ -318,6 +324,7 @@ export function RepositorySidebar({
           <div className="repo-menu-branch" aria-hidden="true" title={menu.remote ? `${menu.remote}/${menu.branch}` : menu.branch}>
             <span>{menu.remote ? `${menu.remote}/${menu.branch}` : menu.branch}</span>
           </div>
+          {!menu.tag && (
           <button
             tabIndex={-1}
             type="button"
@@ -333,22 +340,24 @@ export function RepositorySidebar({
             {branch === menu.branch ? <Check size={15} aria-hidden="true" /> : <GitBranch size={15} aria-hidden="true" />}
             {branch === menu.branch ? "Already checked out" : "Checkout"}
           </button>
+          )}
           {!menu.remote && (
             <button
               type="button"
               role="menuitem"
               className="repo-menu-delete"
               tabIndex={-1}
-              aria-disabled={busy || branch === menu.branch}
+              aria-disabled={busy || (!menu.tag && branch === menu.branch)}
               onClick={() => {
-                if (busy || branch === menu.branch) return;
+                if (busy || (!menu.tag && branch === menu.branch)) return;
                 menu.trigger.focus();
                 setMenu(null);
-                onDeleteBranch(menu.branch);
+                if (menu.tag) onDeleteTag(menu.branch);
+                else onDeleteBranch(menu.branch);
               }}
             >
               <Trash2 size={15} aria-hidden="true" />
-              Delete branch
+              {menu.tag ? "Delete tag" : "Delete branch"}
             </button>
           )}
         </div>,

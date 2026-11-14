@@ -105,3 +105,48 @@
 @keyframes update-spin {
   to { transform: rotate(360deg); }
 }
+
+.updates-mark {
+  width: 42px;
+  height: 42px;
+  flex: none;
+}
+.updates-hero {
+  padding: 16px;
+  background: color-mix(in srgb, var(--active) 55%, var(--panel));
+}
+.updates-projects {
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+.updates-projects h3 {
+  margin: 0 0 8px;
+  font-size: 13px;
+}
+.updates-projects ul {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.updates-projects button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  text-align: left;
+}
+.updates-projects button > span {
+  display: grid;
+  flex: 1;
+  gap: 3px;
+}
+.updates-projects small {
+  color: var(--muted);
+}
+.updates-projects svg {
+  flex: none;
+  color: var(--accent);
+}

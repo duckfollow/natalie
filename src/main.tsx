@@ -1,7 +1,9 @@
 import {
   CircleAlert,
+  TriangleAlert,
   ChevronRight,
   CircleCheck,
+  Crown,
   Cloud,
   FileDiff,
   Download,
@@ -28,6 +30,7 @@ import {
 } from "lucide-react";
 import type { CSSProperties } from "react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
 import { open, confirm } from "@tauri-apps/plugin-dialog";
@@ -45,6 +48,9 @@ import { GitToolbar } from "./GitToolbar";
 import "./style.css";
 
 type Change = { path: string; index: string; worktree: string };
+const isConflict = ({ index, worktree }: Change) =>
+  index === "U" || worktree === "U" || (index === worktree && (index === "A" || index === "D"));
+
 type Snapshot = {
   root: string;
   branch: string;
@@ -98,14 +104,19 @@ function CommitGraphRow({
   author,
   theme,
   compact,
+  localOnly,
+  isHead,
 }: {
   row: ReturnType<typeof layoutHistory>["rows"][number];
   width: number;
   author: string;
   compact: boolean;
+  localOnly: boolean;
+  isHead: boolean;
   theme: "light" | "dark";
 }) {
   const colors = theme === "light" ? lightLaneColors : laneColors;
+  const nodeColor = colors[row.color % colors.length];
   const halfRow = compact ? 16 : 38;
   const graphWidth = laneX(width - 1, compact) + lanePadding;
   const initials = author
@@ -147,7 +158,7 @@ function CommitGraphRow({
               stroke={colors[edge.color % colors.length]}
               opacity={compact ? 0.7 : undefined}
               strokeDasharray={edge.dashed ? "4 3" : undefined}
-              strokeWidth={edge.merge && !compact ? 2.6 : 1.6}
+              strokeWidth={edge.merge && !compact ? 3 : 2}
             />
           );
         })}
@@ -156,12 +167,62 @@ function CommitGraphRow({
         className={`commit-dot${row.isMerge ? " commit-dot-merge" : ""}`}
         style={{
           left: laneX(row.index, compact),
-          background: colors[row.color % colors.length],
+          background: localOnly ? (compact ? "var(--surface)" : "var(--panel)") : nodeColor,
+          border: localOnly ? `2px solid ${nodeColor}` : undefined,
+          color: localOnly ? nodeColor : undefined,
         }}
       >
+        {isHead && (
+          <span className="commit-head-crown" aria-hidden="true">
+            <Crown size={compact ? 10 : 13} fill="currentColor" />
+          </span>
+        )}
         {row.isMerge || compact ? null : initials}
       </span>
     </span>
+  );
+}
+
+function CommitActions({ children }: { children: React.ReactNode }) {
+  const menuRef = useRef<HTMLDetailsElement>(null);
+  useEffect(() => {
+    function dismissOutside(event: PointerEvent) {
+      const menu = menuRef.current;
+      if (menu?.open && !event.composedPath().includes(menu)) menu.open = false;
+    }
+    document.addEventListener("pointerdown", dismissOutside);
+    return () => document.removeEventListener("pointerdown", dismissOutside);
+  }, []);
+
+  return (
+    <>
+      <div className="diff-commit-actions">{children}</div>
+      <details
+        ref={menuRef}
+        className="diff-commit-menu"
+        onKeyDown={(event) => {
+          if (event.key !== "Escape" || !event.currentTarget.open) return;
+          event.stopPropagation();
+          event.currentTarget.open = false;
+          event.currentTarget.querySelector("summary")?.focus();
+        }}
+      >
+        <summary>Commit actions <ChevronRight size={13} aria-hidden="true" /></summary>
+        <div
+          className="diff-commit-menu-items"
+          onClick={(event) => {
+            if (!event.nativeEvent.composedPath().some(
+              (element) => element instanceof HTMLButtonElement && !element.disabled,
+            )) return;
+            const menu = event.currentTarget.parentElement as HTMLDetailsElement;
+            menu.querySelector("summary")?.focus();
+            menu.open = false;
+          }}
+        >
+          {children}
+        </div>
+      </details>
+    </>
   );
 }
 
@@ -192,6 +253,20 @@ function DiffLines({ lines, patch = false }: { lines: string[]; patch?: boolean 
 
 function DiffFiles({ text, commit }: { text: string; commit?: Commit }) {
   const { intro, files } = useMemo(() => splitDiff(text), [text]);
+  const [fileQuery, setFileQuery] = useState("");
+  const filePicker = useRef<HTMLDialogElement>(null);
+  const matchingFiles = files.map((file, index) => ({ ...file, index }))
+    .filter(({ path }) => path.toLowerCase().includes(fileQuery.trim().toLowerCase()));
+
+  function jumpToFile(index: number) {
+    filePicker.current?.close();
+    const section = sections.current[index];
+    if (!section) return;
+    section.open = true;
+    section.scrollIntoView({ block: "start", inline: "nearest" });
+    section.querySelector("summary")?.focus({ preventScroll: true });
+  }
+
   const sections = useRef<Array<HTMLDetailsElement | null>>([]);
   const totals = files.reduce(
     (total, file) => ({
@@ -211,32 +286,51 @@ function DiffFiles({ text, commit }: { text: string; commit?: Commit }) {
             <span className="diff-removed" aria-label={`${totals.deletions} deletions`}>−{totals.deletions}</span>
           </span>
           {files.length > 1 && (
-            <select
-              aria-label="Jump to changed file"
-              value=""
-              onChange={(event) => {
-                if (!event.target.value) return;
-                const section = sections.current[Number(event.target.value)];
-                if (section) {
-                  section.open = true;
-                  section.scrollIntoView({ block: "start" });
-                  section
-                    .querySelector("summary")
-                    ?.focus({ preventScroll: true });
-                }
-              }}
-            >
-              <option value="" disabled>
-                Jump to file…
-              </option>
-              {files.map(({ path }, index) => (
-                <option key={index} value={index}>
-                  {path}
-                </option>
-              ))}
-            </select>
+            <button type="button" className="diff-file-jump" aria-haspopup="dialog" onClick={() => {
+              setFileQuery("");
+              filePicker.current?.showModal();
+            }}>
+              <FileText size={14} aria-hidden="true" /> Jump to file…
+            </button>
           )}
         </div>
+      )}
+      {files.length > 1 && (
+        <dialog ref={filePicker} className="repo-picker diff-jump-dialog" aria-labelledby="diff-jump-title">
+          <header>
+            <FileText size={18} aria-hidden="true" />
+            <h2 id="diff-jump-title">Jump to file</h2>
+            <button type="button" className="repo-picker-close" aria-label="Close file picker" onClick={() => filePicker.current?.close()}>×</button>
+          </header>
+          <div className="repo-picker-content">
+            <input
+              autoFocus
+              type="search"
+              aria-label="Search changed files"
+              placeholder="Search by name or path"
+              value={fileQuery}
+              onChange={(event) => setFileQuery(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && matchingFiles.length) jumpToFile(matchingFiles[0].index);
+              }}
+            />
+            {matchingFiles.length ? (
+              <ul className="repo-list">
+                {matchingFiles.map(({ path, index }) => (
+                  <li key={index}>
+                    <button type="button" className="repo-list-item" title={path} onClick={() => jumpToFile(index)}>
+                      <FileText size={15} aria-hidden="true" />
+                      <span className="repo-list-details">
+                        <strong>{path.slice(path.lastIndexOf("/") + 1)}</strong>
+                        {path.includes("/") && <small>{path.slice(0, path.lastIndexOf("/"))}</small>}
+                      </span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : <p role="status">No matching files.</p>}
+          </div>
+        </dialog>
       )}
       <div className="diff-file-scroll">
         {commit ? (
@@ -437,6 +531,9 @@ function App() {
   const [view, setView] = useState<WorkspaceView>("changes");
 
   const [search, setSearch] = useState("");
+  const [tagCommit, setTagCommit] = useState<string | null>(null);
+  const [branchCommit, setBranchCommit] = useState<string | null>(null);
+  const [appliedPicks, setAppliedPicks] = useState<{ root: string; head: string | null; picks: Commit[] } | null>(null);
   const [cherryPick, setCherryPick] = useState<Commit | null>(null);
   useEffect(() => {
     if (!repo || picker || cherryPick) return;
@@ -463,6 +560,14 @@ function App() {
   const [selection, setSelection] = useState<Selection | null>(null);
   const [diff, setDiff] = useState("");
   const [loadingDiff, setLoadingDiff] = useState(false);
+  const [conflictFile, setConflictFile] = useState<Change | null>(null);
+  const conflictDialog = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const dialog = conflictDialog.current;
+    if (conflictFile && dialog && !dialog.open) dialog.showModal();
+  }, [conflictFile]);
+  const [discarding, setDiscarding] = useState<{ paths: string[]; mode: "file" | "selected" | "all" } | null>(null);
+  const [discardSelection, setDiscardSelection] = useState<Set<string>>(() => new Set());
   const [message, setMessage] = useState("");
   const [notice, setNotice] = useState("");
 
@@ -474,11 +579,19 @@ function App() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const pending = useRef(false);
+  const conflicts = repo?.changes.filter(isConflict) ?? [];
   const staged =
-    repo?.changes.filter((item) => item.index !== " " && item.index !== "?") ??
+    repo?.changes.filter((item) => !isConflict(item) && item.index !== " " && item.index !== "?") ??
     [];
-  const unstaged = repo?.changes.filter((item) => item.worktree !== " ") ?? [];
+  const unstaged = repo?.changes.filter((item) => !isConflict(item) && item.worktree !== " ") ?? [];
   const root = repo?.root ?? null;
+  const pendingPicks = staged.length && appliedPicks && appliedPicks.root === root && appliedPicks.head === repo?.head
+    ? appliedPicks.picks
+    : [];
+  useEffect(() => {
+    if (appliedPicks && !pendingPicks.length) setAppliedPicks(null);
+  }, [appliedPicks, pendingPicks.length]);
+
   const [historyBranch, setHistoryBranch] = useState<string | null>(null);
   const [remoteHistory, setRemoteHistory] = useState<{
     root: string;
@@ -514,10 +627,70 @@ function App() {
     selection?.kind === "show"
       ? commits?.find(({ hash }) => hash === selection.hash)
       : undefined;
-  const graph = useMemo(
-    () => layoutHistory(commits ?? []),
-    [commits],
-  );
+  const [historyScroll, setHistoryScroll] = useState<{ hash: string } | null>(null);
+  useLayoutEffect(() => {
+    if (view !== "history" || !historyScroll) return;
+    const row = listPanel.current?.querySelector(
+      `[data-commit-hash="${CSS.escape(historyScroll.hash)}"]`,
+    );
+    if (row) {
+      row.scrollIntoView({ block: "nearest", inline: "nearest" });
+      setHistoryScroll(null);
+    }
+  }, [view, commits, historyScroll]);
+
+  const [graphMenu, setGraphMenu] = useState<{ commit: Commit; x: number; y: number; trigger: HTMLButtonElement } | null>(null);
+  const graphMenuRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    if (!graphMenu) return;
+    const menu = graphMenuRef.current;
+    if (!menu) return;
+    menu.style.left = `${Math.max(4, Math.min(graphMenu.x, window.innerWidth - menu.offsetWidth - 4))}px`;
+    menu.style.top = `${Math.max(4, Math.min(graphMenu.y, window.innerHeight - menu.offsetHeight - 4))}px`;
+    menu.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
+    function dismiss(event: PointerEvent) {
+      if (!event.composedPath().includes(menu!)) setGraphMenu(null);
+    }
+    document.addEventListener("pointerdown", dismiss);
+    return () => document.removeEventListener("pointerdown", dismiss);
+  }, [graphMenu]);
+
+  function graphMenuEvents(commit: Commit) {
+    function open(trigger: HTMLButtonElement, x: number, y: number) {
+      if (commit.hash !== previewHash) setSelection({ kind: "show", hash: commit.hash });
+      setGraphMenu({ commit, x, y, trigger });
+    }
+    return {
+      "aria-haspopup": "true" as const,
+      onContextMenu(event: React.MouseEvent<HTMLButtonElement>) {
+        event.preventDefault();
+        open(event.currentTarget, event.clientX, event.clientY);
+      },
+      onKeyDown(event: React.KeyboardEvent<HTMLButtonElement>) {
+        if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
+        event.preventDefault();
+        const bounds = event.currentTarget.getBoundingClientRect();
+        open(event.currentTarget, bounds.left, bounds.bottom);
+      },
+    };
+  }
+
+  const pendingPickDialog = useRef<HTMLDialogElement>(null);
+  const previewHash = "pending-cherry-pick";
+  const graphCommits = [...(commits ?? [])];
+  const headIndex = graphCommits.findIndex(({ hash }) => hash === repo?.head);
+  if (view === "history" && !remoteHash && pendingPicks.length && headIndex >= 0) {
+    graphCommits.splice(headIndex, 0, {
+      hash: previewHash,
+      parents: [graphCommits[headIndex].hash],
+      subject: message.trim().split("\n")[0] || "Pending commit",
+      author: "",
+      date: "",
+      refs: "",
+      local_only: true,
+    });
+  }
+  const graph = layoutHistory(graphCommits);
 
   const history = view === "history";
   const graphWidth = laneX(graph.width - 1) + lanePadding;
@@ -594,6 +767,7 @@ function App() {
     action: object,
     message: string,
     showChangesOnFailure = false,
+    stagedCommit?: Commit,
   ) {
     void update(
       async () => {
@@ -616,10 +790,19 @@ function App() {
           throw failure;
         }
       },
-      () => {
+      (next) => {
         setSelection(null);
-        if ("kind" in action && (action.kind === "checkout_remote" || action.kind === "checkout_branch")) {
+        if ("kind" in action && (action.kind === "checkout_remote" || action.kind === "checkout_branch" || action.kind === "checkout_commit")) {
           setHistoryBranch(null);
+        }
+        if (stagedCommit) {
+          const subject = stagedCommit.subject || stagedCommit.hash.slice(0, 7);
+          setMessage((draft) => draft.trim() ? `${draft.trimEnd()}\n${subject}` : subject);
+          setAppliedPicks((previous) => ({
+            root: next.root,
+            head: next.head,
+            picks: [...(previous?.root === next.root && previous.head === next.head ? previous.picks : []), stagedCommit],
+          }));
         }
         setNotice(message);
       },
@@ -627,6 +810,9 @@ function App() {
   }
 
   function enterRepository() {
+    setAppliedPicks(null);
+    setHistoryScroll(null);
+    setDiscardSelection(new Set());
     setHistoryBranch(null);
     setSelection(null);
     setView("changes");
@@ -649,11 +835,47 @@ function App() {
     }, enterRepository);
   }
 
-  function changeGroup(title: string, items: Change[], inIndex: boolean) {
+  function canDiscard(change: Change) {
+    return !repo?.submodules.includes(change.path)
+      && !isConflict(change);
+  }
+
+  const discardable = repo?.changes.filter(canDiscard).map(({ path }) => path) ?? [];
+  const selectedForDiscard = discardable.filter((path) => discardSelection.has(path));
+
+  function discardFiles(paths: string[], mode: "file" | "selected" | "all" = "file") {
+    const label = paths.length === 1 ? `"${paths[0]}"` : `${paths.length} files`;
+    void update(async () => {
+      const approved = await confirm(
+        `Discard staged and unstaged changes in ${label}? New files in this selection will be deleted. This cannot be undone.`,
+        { title: "Discard file changes", kind: "warning", okLabel: "Discard", cancelLabel: "Cancel" },
+      );
+      if (!approved) return null;
+      setDiscarding({ paths, mode });
+      try {
+        return await repository<Snapshot>(root, { kind: "discard_many", paths });
+      } catch (failure) {
+        try {
+          setRepo(await repository<Snapshot>(null, { kind: "open", folder: root }));
+        } catch {
+          // Preserve the original Git error.
+        }
+        throw failure;
+      } finally {
+        setDiscarding(null);
+      }
+    }, () => {
+      setDiscardSelection(new Set());
+      setSelection(null);
+      setNotice("File changes discarded.");
+    });
+  }
+
+  function changeGroup(title: string, items: Change[], inIndex: boolean, conflicting = false) {
     return (
-      <section className="change-group" aria-label={title}>
+      <section className={conflicting ? "change-group conflict-group" : "change-group"} aria-label={title}>
         <h2>
-          {inIndex ? (
+          {conflicting ? <CircleAlert size={14} aria-hidden="true" /> : inIndex ? (
             <Layers3 size={14} aria-hidden="true" />
           ) : (
             <FileDiff size={14} aria-hidden="true" />
@@ -668,7 +890,7 @@ function App() {
             selection?.kind === "diff" &&
             selection.path === item.path &&
             selection.staged === inIndex;
-          const code = inIndex ? item.index : item.worktree;
+          const code = conflicting ? "U" : inIndex ? item.index : item.worktree;
           const separator = item.path.lastIndexOf("/");
           const name = item.path.slice(separator + 1);
           const directory = item.path.slice(0, separator);
@@ -677,7 +899,27 @@ function App() {
               className={`file-row${selected ? " selected" : ""}`}
               key={item.path}
             >
+              <input
+                type="checkbox"
+                className="discard-checkbox"
+                aria-label={`Select ${item.path} for discard (${title.toLowerCase()})`}
+                checked={discardSelection.has(item.path) && canDiscard(item)}
+                disabled={busy || !canDiscard(item)}
+                onChange={(event) => {
+                  const checked = event.currentTarget.checked;
+                  setDiscardSelection((previous) => {
+                    const next = new Set(previous);
+                    if (checked) next.add(item.path);
+                    else next.delete(item.path);
+                    return next;
+                  });
+                }}
+              />
               <button
+                onContextMenu={conflicting ? (event) => {
+                  event.preventDefault();
+                  if (!busy) setConflictFile(item);
+                } : undefined}
                 className="file-name"
                 type="button"
                 title={item.path}
@@ -691,41 +933,31 @@ function App() {
                   })
                 }
               >
-                <FileText size={14} aria-hidden="true" />
+                {conflicting ? <TriangleAlert size={14} className="conflict-file-icon" aria-label="Conflict" /> : <FileText size={14} aria-hidden="true" />}
                 <span className="file-path">
                   <span className="file-basename">{name}</span>
                   {separator >= 0 && (
                     <span className="file-directory">{directory}/</span>
                   )}
                 </span>
-                <span
-                  className={`status status-${code === "?" ? "new" : code}`}
-                >
-                  {code === "?" ? "A" : code}
-                </span>
+                {!conflicting && (
+                  <span className={`status status-${code === "?" ? "new" : code}`}>
+                    {code === "?" ? "A" : code}
+                  </span>
+                )}
               </button>
               <button
                 className="file-action discard-action"
                 type="button"
-                disabled={busy || repo?.submodules.includes(item.path)}
+                disabled={busy || !canDiscard(item)}
                 aria-label={`Discard changes in ${item.path}`}
+                aria-busy={discarding?.paths.includes(item.path)}
                 title="Discard all changes in this file"
-                onClick={() => {
-                  void update(async () => {
-                    const approved = await confirm(
-                      `Discard all staged and unstaged changes in "${item.path}"? New files will be deleted. This cannot be undone.`,
-                      { title: "Discard file changes", kind: "warning", okLabel: "Discard", cancelLabel: "Cancel" },
-                    );
-                    return approved
-                      ? repository<Snapshot>(root, { kind: "discard", path: item.path })
-                      : null;
-                  }, () => {
-                    setSelection(null);
-                    setNotice("File changes discarded.");
-                  });
-                }}
+                onClick={() => discardFiles([item.path])}
               >
-                <Undo2 size={14} aria-hidden="true" />
+                {discarding?.paths.includes(item.path)
+                  ? <LoaderCircle size={14} className="spin" aria-hidden="true" />
+                  : <Undo2 size={14} aria-hidden="true" />}
               </button>
               <button
                 className="file-action stage-action"
@@ -734,6 +966,10 @@ function App() {
                 aria-label={`${inIndex ? "Unstage" : "Stage"} ${item.path}`}
                 title={inIndex ? "Unstage" : "Stage"}
                 onClick={() => {
+                  if (conflicting) {
+                    setConflictFile(item);
+                    return;
+                  }
                   void update(
                     () =>
                       repository<Snapshot>(root, {
@@ -769,6 +1005,70 @@ function App() {
           );
         })}
       </section>
+    );
+  }
+
+  function commitCommands(repo: Snapshot, hash: string, commit?: Commit) {
+    return (
+      <>
+                  <button
+                    type="button"
+                    disabled={busy || repo.cherry_picking || (repo.branch === "Detached HEAD" && repo.head === hash)}
+                    onClick={() => runGitAction({ kind: "checkout_commit", hash: hash }, `Checked out ${hash.slice(0, 7)} (detached HEAD).`)}
+                  >
+                    <GitCommitHorizontal size={14} aria-hidden="true" />
+                    Checkout commit
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busy || repo.cherry_picking}
+                    onClick={() => setBranchCommit(hash)}
+                  >
+                    <GitBranch size={14} aria-hidden="true" />
+                    Create branch
+                  </button>
+                  <button type="button" disabled={busy || repo.cherry_picking} onClick={() => setTagCommit(hash)}>
+                    <Tag size={14} aria-hidden="true" />
+                    Create tag
+                  </button>
+                  {commit && repo.branch !== "Detached HEAD" && <>
+                  <button
+                    type="button"
+                    disabled={busy || repo.cherry_picking}
+                    onClick={() => setCherryPick(commit)}
+                  >
+                    <GitPullRequestArrow size={14} aria-hidden="true" />
+                    Cherry-pick
+                  </button>
+                  <button
+                    type="button"
+                    className="commit-reset-action"
+                    disabled={busy || repo.cherry_picking || !repo.head || repo.head === commit.hash}
+                    onClick={() => {
+                      const { branch, head } = repo;
+                      if (!head) return;
+                      const { subject } = commit;
+                      void update(async () => {
+                        const approved = await confirm(
+                          `Move ${branch} to ${hash.slice(0, 7)} · ${subject}? The index and working tree stay as they are. This changes the local branch history.`,
+                          { title: "Reset (Soft)", kind: "warning", okLabel: "Reset (Soft)", cancelLabel: "Cancel" },
+                        );
+                        return approved
+                          ? repository<Snapshot>(root, { kind: "reset_soft", hash, branch, head })
+                          : null;
+                      }, () => {
+                        setView("changes");
+                        setPanels((current) => ({ ...current, list: true }));
+                        setSelection(null);
+                        setNotice("Soft reset completed.");
+                      });
+                    }}
+                  >
+                    <Undo2 size={14} aria-hidden="true" />
+                    Reset (Soft)
+                  </button>
+                  </>}
+      </>
     );
   }
 
@@ -840,7 +1140,7 @@ function App() {
             onClick={chooseRepository}
             disabled={busy || gitStatus !== "ready"}
           >
-            <FolderOpen size={15} aria-hidden="true" /> Open repository
+            <FolderOpen size={15} aria-hidden="true" /> Open repo
           </button>
         </div>
       </header>
@@ -863,6 +1163,9 @@ function App() {
               busy={busy}
               branches={repo.branches.map(({ name }) => name)}
               currentBranch={repo.branch}
+              tagCommit={tagCommit}
+              branchCommit={branchCommit}
+              onBranchCommitClose={() => { setBranchCommit(null); setTagCommit(null); }}
               originUrl={repo.origin_url}
               ahead={repo.ahead}
               behind={repo.behind}
@@ -884,6 +1187,7 @@ function App() {
                     pull: "Pull completed.",
                     push: "Push completed.",
                     branch: "Branch created.",
+                    tag: "Tag created.",
                     merge: "Merge completed.",
                     stash: "Changes stashed.",
                   }[action.kind],
@@ -1014,6 +1318,15 @@ function App() {
                 `Checked out ${branch}`,
               )
             }
+            onDeleteTag={(name) => {
+              void update(async () => {
+                const approved = await confirm(
+                  `Delete the local tag "${name}"?`,
+                  { title: "Delete tag", kind: "warning", okLabel: "Delete tag", cancelLabel: "Cancel" },
+                );
+                return approved ? repository<Snapshot>(root, { kind: "delete_tag", name }) : null;
+              }, () => setNotice(`Deleted local tag ${name}.`));
+            }}
             onDeleteBranch={(branch) => {
               void update(async () => {
                 const approved = await confirm(
@@ -1029,18 +1342,21 @@ function App() {
               });
             }}
             onRemoteBranch={(ref) => {
+              setHistoryScroll({ hash: ref.hash });
               setHistoryBranch(ref.name);
               setView("history");
               setPanels((current) => ({ ...current, list: true }));
               setSelection({ kind: "show", hash: ref.hash });
             }}
             onView={(next) => {
+              setHistoryScroll(null);
               setHistoryBranch(null);
               setView(next);
               setPanels((current) => ({ ...current, list: true }));
               setSelection(null);
             }}
             onCommit={(hash) => {
+              setHistoryScroll({ hash });
               setHistoryBranch(null);
               setView("history");
               setSelection({ kind: "show", hash });
@@ -1102,7 +1418,18 @@ function App() {
             )}
             {view === "changes" ? (
               <>
+                {discardable.length > 0 && (
+                  <div className="discard-toolbar">
+                    <button type="button" disabled={busy || !selectedForDiscard.length} aria-busy={discarding?.mode === "selected"} onClick={() => discardFiles(selectedForDiscard, "selected")}>
+                      {discarding?.mode === "selected" ? <><LoaderCircle size={12} className="spin" aria-hidden="true" /> Discarding…</> : `Discard selected${selectedForDiscard.length ? ` (${selectedForDiscard.length})` : ""}`}
+                    </button>
+                    <button type="button" disabled={busy} aria-busy={discarding?.mode === "all"} onClick={() => discardFiles(discardable, "all")}>
+                      {discarding?.mode === "all" ? <><LoaderCircle size={12} className="spin" aria-hidden="true" /> Discarding…</> : "Discard all"}
+                    </button>
+                  </div>
+                )}
                 <div className="sidebar-scroll file-status-list">
+                  {conflicts.length > 0 && changeGroup("Conflicts", conflicts, false, true)}
                   {changeGroup("Unstaged", unstaged, false)}
                   {changeGroup("Staged", staged, true)}
                 </div>
@@ -1151,7 +1478,22 @@ function App() {
                     {loadedHistory?.error ?? (remoteHash && !loadedHistory ? "Loading history…" : "No commits yet")}
                   </p>
                 )}
-                {commits?.map((commit, index) => {
+                {graphCommits.map((commit, index) => {
+                  if (commit.hash === previewHash) {
+                    const description = `${pendingPicks.length} staged cherry-pick${pendingPicks.length === 1 ? "" : "s"}`;
+                    return (
+                      <button type="button" {...graphMenuEvents(commit)} key={previewHash} title={`Pending commit · ${description}`}
+                        aria-label={`Review pending commit · ${description}`}
+                        onClick={() => pendingPickDialog.current?.showModal()}>
+                        <CommitGraphRow row={graph.rows[index]} width={graph.width} compact={graphOnly}
+                          localOnly isHead={false} author="" theme={theme} />
+                        {!graphOnly && <span className="commit-details">
+                          <strong>Pending commit</strong>
+                          <small className="commit-meta">{description} · View sources</small>
+                        </span>}
+                      </button>
+                    );
+                  }
                   if (
                     view === "search" &&
                     !`${commit.subject} ${commit.author} ${commit.hash} ${commit.refs}`
@@ -1159,6 +1501,7 @@ function App() {
                       .includes(search.trim().toLowerCase())
                   )
                     return null;
+                  const pickOrder = pendingPicks.findIndex((pick) => pick.hash === commit.hash) + 1;
                   return (
                     <button
                       className={
@@ -1168,8 +1511,13 @@ function App() {
                           : ""
                       }
                       key={commit.hash}
+                      {...(view === "history" ? graphMenuEvents(commit) : {})}
+                      data-commit-hash={commit.hash}
+                      data-pending-pick={pickOrder || undefined}
+                      data-head={commit.hash === repo.head ? "true" : undefined}
+                      aria-current={commit.hash === repo.head ? "true" : undefined}
                       aria-label={graphOnly ? `${commit.subject || "Untitled commit"} · ${commit.hash.slice(0, 7)}` : undefined}
-                      title={graphOnly ? `${commit.subject || "Untitled commit"} · ${commit.hash.slice(0, 7)}` : undefined}
+                      title={graphOnly ? `${commit.hash === repo.head ? "HEAD · " : ""}${commit.subject || "Untitled commit"} · ${commit.hash.slice(0, 7)}` : undefined}
                       aria-pressed={
                         selection?.kind === "show" &&
                         selection.hash === commit.hash
@@ -1188,9 +1536,17 @@ function App() {
                           row={graph.rows[index]}
                           width={graph.width}
                           compact={graphOnly}
+                          localOnly={commit.local_only}
+                          isHead={commit.hash === repo.head}
                           author={commit.author}
                           theme={theme}
                         />
+                      )}
+                      {pickOrder > 0 && (
+                        <span className="pending-pick-marker" title={`Cherry-pick ${pickOrder} · pending commit`}>
+                          <GitPullRequestArrow size={11} aria-hidden="true" />
+                          {pickOrder}
+                        </span>
                       )}
                       {!graphOnly && <span className="commit-details">
                         <span className="commit-title">
@@ -1300,43 +1656,10 @@ function App() {
                   {selection.staged ? "Staged" : "Working tree"}
                 </span>
               )}
-              {selectedCommit && repo.branch !== "Detached HEAD" && (
-                <div className="diff-commit-actions">
-                  <button
-                    type="button"
-                    disabled={busy || repo.cherry_picking}
-                    onClick={() => setCherryPick(selectedCommit)}
-                  >
-                    <GitPullRequestArrow size={14} aria-hidden="true" />
-                    Cherry-pick
-                  </button>
-                  <button
-                    type="button"
-                    disabled={busy || repo.cherry_picking || !repo.head || repo.head === selectedCommit.hash}
-                    onClick={() => {
-                      const { branch, head } = repo;
-                      if (!head) return;
-                      const { hash, subject } = selectedCommit;
-                      void update(async () => {
-                        const approved = await confirm(
-                          `Move ${branch} to ${hash.slice(0, 7)} · ${subject}? The index and working tree stay as they are. This changes the local branch history.`,
-                          { title: "Reset (Soft)", kind: "warning", okLabel: "Reset (Soft)", cancelLabel: "Cancel" },
-                        );
-                        return approved
-                          ? repository<Snapshot>(root, { kind: "reset_soft", hash, branch, head })
-                          : null;
-                      }, () => {
-                        setView("changes");
-                        setPanels((current) => ({ ...current, list: true }));
-                        setSelection(null);
-                        setNotice("Soft reset completed.");
-                      });
-                    }}
-                  >
-                    <Undo2 size={14} aria-hidden="true" />
-                    Reset (Soft)
-                  </button>
-                </div>
+              {selection?.kind === "show" && !loadingDiff && diff && (
+                <CommitActions key={selection.hash}>
+                  {commitCommands(repo, selection.hash, selectedCommit)}
+                </CommitActions>
               )}
             </header>
             {loadingDiff ? (
@@ -1367,17 +1690,141 @@ function App() {
           </section>
         </div>
       )}
+      {graphMenu && repo && createPortal(
+        <div
+          ref={graphMenuRef}
+          className="diff-commit-menu-items graph-context-menu"
+          role="group"
+          aria-label="Commit actions"
+          onKeyDown={(event) => {
+            if (event.key !== "Escape") return;
+            event.preventDefault();
+            graphMenu.trigger.focus();
+            setGraphMenu(null);
+          }}
+          onClick={(event) => {
+            if (!(event.target as Element).closest("button:not(:disabled)")) return;
+            setGraphMenu(null);
+          }}
+        >
+          <div className="graph-menu-heading">
+            <strong title={graphMenu.commit.subject}>
+              {graphMenu.commit.hash === previewHash ? "Pending commit" : graphMenu.commit.subject || "Untitled commit"}
+            </strong>
+            {graphMenu.commit.hash !== previewHash && <code>{graphMenu.commit.hash.slice(0, 7)}</code>}
+          </div>
+          {graphMenu.commit.hash === previewHash ? (
+            <>
+              <button type="button" onClick={() => pendingPickDialog.current?.showModal()}><GitPullRequestArrow size={14} aria-hidden="true" /> View sources</button>
+              <button type="button" onClick={() => {
+                setSelection(null);
+                setPanels((current) => ({ ...current, list: true }));
+                setView("changes");
+              }}><FileDiff size={14} aria-hidden="true" /> Review staged files</button>
+            </>
+          ) : commitCommands(repo, graphMenu.commit.hash, graphMenu.commit)}
+        </div>,
+        document.body,
+      )}
+      {pendingPicks.length > 0 && (
+        <dialog ref={pendingPickDialog} className="repo-picker repository-action-picker pending-pick-dialog" aria-labelledby="pending-pick-title">
+          <header>
+            <GitPullRequestArrow size={18} aria-hidden="true" />
+            <h2 id="pending-pick-title">Pending commit</h2>
+            <button type="button" className="repo-picker-close" aria-label="Close pending commit" onClick={() => pendingPickDialog.current?.close()}>×</button>
+          </header>
+          <div className="repo-picker-content git-action-form">
+            <div className="pending-pick-target">
+              <GitBranch size={16} aria-hidden="true" />
+              <div>
+                <small>Destination branch</small>
+                <strong>{repo?.branch}</strong>
+              </div>
+            </div>
+            <h3 id="pending-pick-sources-title">
+              Applied cherry-picks <span>{pendingPicks.length}</span>
+            </h3>
+            <ol className="pending-pick-sources" aria-labelledby="pending-pick-sources-title">
+              {pendingPicks.map((pick, index) => (
+                <li key={`${pick.hash}-${index}`}>
+                  <span className="pending-pick-order" aria-hidden="true">{index + 1}</span>
+                  <div>
+                    <strong>{pick.subject || "Untitled commit"}</strong>
+                    <code title={pick.hash}>{pick.hash.slice(0, 7)}</code>
+                  </div>
+                </li>
+              ))}
+            </ol>
+            <footer>
+              <button type="button" className="primary" onClick={() => {
+                pendingPickDialog.current?.close();
+                setSelection(null);
+                setPanels((current) => ({ ...current, list: true }));
+                setView("changes");
+              }}><FileDiff size={15} aria-hidden="true" /> Review staged files</button>
+            </footer>
+          </div>
+        </dialog>
+      )}
+      {conflictFile && (
+        <dialog ref={conflictDialog} className="repo-picker repository-action-picker resolve-dialog" aria-labelledby="resolve-conflict-title"
+          onClose={() => setConflictFile(null)}>
+          <header>
+            <TriangleAlert size={18} aria-hidden="true" />
+            <h2 id="resolve-conflict-title">Resolve conflict</h2>
+            <button type="button" className="repo-picker-close" aria-label="Close" onClick={() => conflictDialog.current?.close()}>×</button>
+          </header>
+          <div className="repo-picker-content git-action-form">
+            <div className="resolve-file">
+              <TriangleAlert size={16} aria-hidden="true" />
+              <code>{conflictFile.path}</code>
+            </div>
+            {([
+              ["current", "Keep current", `Use the entire file from ${repo?.branch ?? "the current branch"}, then stage it.`, GitBranch, conflictFile.index === "D"],
+              ["incoming", "Accept incoming", "Use the entire file from the incoming commit, then stage it.", Download, conflictFile.worktree === "D"],
+              ["mark_resolved", "Mark as resolved", "Stage the file as it is now. Choose this after editing it yourself.", CircleCheck, false],
+            ] as const).map(([resolution, label, description, Icon, deletes]) => (
+              <button key={resolution} className="resolve-option" type="button" disabled={busy} onClick={() => {
+                const { path } = conflictFile;
+                conflictDialog.current?.close();
+                void update(async () => {
+                  if (resolution !== "mark_resolved") {
+                    const approved = await confirm(
+                      deletes ? `Delete "${path}" and stage the deletion?` : `Replace "${path}" with the selected version and stage it?`,
+                      { title: label, kind: "warning", okLabel: label, cancelLabel: "Cancel" },
+                    );
+                    if (!approved) return null;
+                  }
+                  return repository<Snapshot>(root, { kind: "resolve_conflict", path, resolution });
+                }, () => {
+                  setSelection(null);
+                  setNotice(`Resolved ${path}.`);
+                });
+              }}>
+                <Icon size={17} aria-hidden="true" />
+                <span>
+                  <strong>{label}</strong>
+                  <small>{deletes ? "Remove this file and stage the deletion." : description}</small>
+                </span>
+                <ChevronRight size={15} aria-hidden="true" />
+              </button>
+            ))}
+          </div>
+        </dialog>
+      )}
       {cherryPick && repo && (
         <CherryPickDialog
           commit={cherryPick}
           branch={repo.branch}
+          head={repo.head}
           onClose={() => setCherryPick(null)}
-          onApply={(mainline) => {
+          onApply={(mainline, noCommit) => {
             setCherryPick(null);
             runGitAction(
-              { kind: "cherry_pick", hash: cherryPick.hash, mainline },
-              "Commit cherry-picked.",
+              { kind: "cherry_pick", hash: cherryPick.hash, mainline, no_commit: noCommit },
+              noCommit ? "Cherry-pick changes staged for review." : "Commit cherry-picked.",
               true,
+              noCommit ? cherryPick : undefined,
             );
           }}
         />

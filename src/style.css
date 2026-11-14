@@ -2132,3 +2132,16 @@ nav button[aria-pressed="true"] {
   color: var(--error);
   font-size: 12px;
 }
+
+.history-pagination {
+  display: grid;
+  place-items: center;
+  min-height: 32px;
+  color: var(--muted);
+}
+.history-pagination button {
+  width: auto;
+  height: auto;
+  min-width: 0;
+  padding: 4px 8px;
+}

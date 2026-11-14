@@ -91,14 +91,22 @@ fn git(root: &Path, args: &[&str]) -> Result<String, String> {
     output(run(root, args)?, false)
 }
 
-fn history(path: &Path, revisions: &[&str]) -> Result<Vec<Commit>, String> {
+fn history(
+    path: &Path,
+    revisions: &[&str],
+    skip: usize,
+    limit: usize,
+) -> Result<Vec<Commit>, String> {
+    let skip = format!("--skip={skip}");
+    let limit = limit.to_string();
     let mut args = vec![
         "log",
         "-z",
         "--topo-order",
         "--decorate=short",
         "-n",
-        "100",
+        &limit,
+        &skip,
         "--format=%H%x00%an%x00%aI%x00%s%x00%P%x00%D",
     ];
     args.extend_from_slice(revisions);
@@ -176,7 +184,7 @@ fn snapshot(folder: &Path) -> Result<Snapshot, String> {
         })
         .collect::<Result<Vec<_>, String>>()?;
     let commits = if head.is_some() {
-        history(path, &["--branches", "HEAD"])?
+        history(path, &["--branches", "HEAD"], 0, 100)?
     } else {
         Vec::new()
     };
@@ -344,6 +352,11 @@ enum Action {
     },
     ContinueCherryPick,
     AbortCherryPick,
+    OlderHistory {
+        hash: Option<String>,
+        offset: usize,
+        anchor: String,
+    },
     History {
         hash: String,
     },
@@ -496,9 +509,27 @@ fn perform(root: Option<String>, action: Action) -> Result<Response, String> {
             }
             output(run(root, &args)?, untracked).map(Response::Text)
         }
+        Action::OlderHistory {
+            hash,
+            offset,
+            anchor,
+        } => {
+            let mut page = match hash.as_deref() {
+                Some(hash) => {
+                    validate_commit_hash(hash)?;
+                    history(root, &[hash], offset.saturating_sub(1), 101)?
+                }
+                None => history(root, &["--branches", "HEAD"], offset.saturating_sub(1), 101)?,
+            };
+            if page.first().map(|commit| commit.hash.as_str()) != Some(&anchor) {
+                return Err("History changed. Refresh the repository and try again.".into());
+            }
+            page.remove(0);
+            Ok(Response::History(page))
+        }
         Action::History { hash } => {
             validate_commit_hash(&hash)?;
-            history(root, &[&hash]).map(Response::History)
+            history(root, &[&hash], 0, 100).map(Response::History)
         }
         Action::Show { hash } => {
             validate_commit_hash(&hash)?;

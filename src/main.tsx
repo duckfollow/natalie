@@ -1,5 +1,6 @@
 import {
   CircleAlert,
+  ArrowDownToLine,
   TriangleAlert,
   ChevronRight,
   CircleCheck,
@@ -614,7 +615,39 @@ function App() {
   const loadedHistory = remoteHistory && remoteHistory.root === root && remoteHistory.hash === remoteHash
     ? remoteHistory
     : null;
-  const commits = remoteHash ? loadedHistory?.commits : repo?.commits;
+  const firstPage = remoteHash ? loadedHistory?.commits : repo?.commits;
+  const [olderHistory, setOlderHistory] = useState<{
+    base: Commit[]; commits: Commit[]; done: boolean; loading: boolean; error?: string;
+  } | null>(null);
+  const older = olderHistory?.base === firstPage ? olderHistory : null;
+  const commits = older?.commits ?? firstPage;
+  const canLoadOlder = (firstPage?.length ?? 0) === 100 && !older?.done;
+  const historyEnd = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (view !== "history" || !root || !firstPage || !commits?.length || !canLoadOlder || older?.error || older?.loading) return;
+    const marker = historyEnd.current;
+    if (!marker) return;
+    const observer = new IntersectionObserver(([entry]) => {
+      if (!entry.isIntersecting) return;
+      observer.disconnect();
+      const anchor = commits[commits.length - 1].hash;
+      setOlderHistory({ base: firstPage, commits, done: false, loading: true });
+      void repository<Commit[]>(root, {
+        kind: "older_history", hash: remoteHash ?? null, offset: commits.length, anchor,
+      }).then(
+        (page) => setOlderHistory((current) => current?.base === firstPage
+          ? { base: firstPage, commits: [...commits, ...page], done: page.length < 100, loading: false }
+          : current),
+        (failure) => setOlderHistory((current) => current?.base === firstPage
+          ? { base: firstPage, commits, done: false, loading: false, error: String(failure) }
+          : current),
+      );
+    }, { root: marker.parentElement, rootMargin: "0px 0px 160px 0px" });
+    observer.observe(marker);
+    return () => observer.disconnect();
+  }, [view, root, remoteHash, firstPage, commits, canLoadOlder, older]);
+
 
   useEffect(() => {
     if (!root || !remoteHash) return;
@@ -1419,7 +1452,7 @@ function App() {
               <div className="history-context" title={remoteHash ? historyBranch ?? repo.branch : repo.branch}>
                 <GitBranch size={13} aria-hidden="true" />
                 <span>{remoteHash ? historyBranch : repo.branch}</span>
-                <small>Latest {commits?.length ?? 0} commits</small>
+                <small>{commits?.length ?? 0} commits loaded</small>
               </div>
             )}
             {view === "search" && (
@@ -1619,6 +1652,19 @@ function App() {
                     </button>
                   );
                 })}
+                {view === "history" && !!commits?.length && (
+                  <div className="history-pagination" ref={historyEnd}>
+                    {older?.error ? (
+                      <button type="button" title={older.error} onClick={() => setOlderHistory({ ...older, error: undefined })}>Retry</button>
+                    ) : older?.loading ? (
+                      <span role="status" aria-label="Loading older commits">
+                        <LoaderCircle size={16} className="spin" aria-hidden="true" />
+                      </span>
+                    ) : !canLoadOlder ? <span role="img" aria-label="End of history" title="End of history">
+                      <ArrowDownToLine size={15} aria-hidden="true" />
+                    </span> : null}
+                  </div>
+                )}
               </div>
             )}
           </aside>

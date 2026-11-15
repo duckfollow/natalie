@@ -4,8 +4,9 @@ mod updates;
 
 use serde::{Deserialize, Serialize};
 use std::{
+    io::Write,
     path::Path,
-    process::{Command, Output},
+    process::{Command, Output, Stdio},
 };
 
 #[derive(Serialize)]
@@ -48,6 +49,7 @@ struct Snapshot {
     stashes: Vec<Reference>,
     submodules: Vec<String>,
     cherry_picking: bool,
+    has_upstream: bool,
     ahead: Option<usize>,
     behind: Option<usize>,
 }
@@ -132,31 +134,15 @@ fn history(
         .collect())
 }
 
-fn snapshot(folder: &Path) -> Result<Snapshot, String> {
-    let root = git(folder, &["rev-parse", "--show-toplevel"])?;
-    let root = root.trim_end_matches('\n').to_owned();
-    let path = Path::new(&root);
-    let head = git(path, &["rev-parse", "--verify", "HEAD"])
-        .ok()
-        .map(|hash| hash.trim_end().to_owned());
-    let branch = git(path, &["symbolic-ref", "--quiet", "--short", "HEAD"])
-        .map(|name| name.trim_end().to_owned())
-        .unwrap_or_else(|_| "Detached HEAD".to_owned());
-    // Compare with the configured upstream; unavailable for new or detached branches.
-    let divergence = git(
-        path,
-        &["rev-list", "--left-right", "--count", "HEAD...@{upstream}"],
-    )
-    .ok()
-    .and_then(|counts| {
-        let mut counts = counts.split_whitespace();
-        Some((
-            counts.next()?.parse::<usize>().ok()?,
-            counts.next()?.parse::<usize>().ok()?,
-        ))
-    });
+fn has_upstream(root: &Path, branch: &str) -> Result<bool, String> {
+    let reference = format!("refs/heads/{branch}");
+    let upstream = git(root, &["for-each-ref", "--format=%(upstream)", &reference])?;
+    Ok(!upstream.trim().is_empty())
+}
+
+fn working_changes(root: &Path) -> Result<Vec<Change>, String> {
     let status = run(
-        path,
+        root,
         &[
             "status",
             "--porcelain=v1",
@@ -168,7 +154,7 @@ fn snapshot(folder: &Path) -> Result<Snapshot, String> {
     if !status.status.success() {
         return Err(output(status, false).unwrap_err());
     }
-    let changes = status
+    status
         .stdout
         .split(|byte| *byte == 0)
         .filter(|entry| !entry.is_empty())
@@ -182,7 +168,34 @@ fn snapshot(folder: &Path) -> Result<Snapshot, String> {
                 worktree: entry[1] as char,
             })
         })
-        .collect::<Result<Vec<_>, String>>()?;
+        .collect()
+}
+
+fn snapshot(folder: &Path) -> Result<Snapshot, String> {
+    let root = git(folder, &["rev-parse", "--show-toplevel"])?;
+    let root = root.trim_end_matches('\n').to_owned();
+    let path = Path::new(&root);
+    let head = git(path, &["rev-parse", "--verify", "HEAD"])
+        .ok()
+        .map(|hash| hash.trim_end().to_owned());
+    let branch = git(path, &["symbolic-ref", "--quiet", "--short", "HEAD"])
+        .map(|name| name.trim_end().to_owned())
+        .unwrap_or_else(|_| "Detached HEAD".to_owned());
+    let has_upstream = head.is_some() && has_upstream(path, &branch)?;
+    // Compare with the configured upstream; unavailable for new or detached branches.
+    let divergence = git(
+        path,
+        &["rev-list", "--left-right", "--count", "HEAD...@{upstream}"],
+    )
+    .ok()
+    .and_then(|counts| {
+        let mut counts = counts.split_whitespace();
+        Some((
+            counts.next()?.parse::<usize>().ok()?,
+            counts.next()?.parse::<usize>().ok()?,
+        ))
+    });
+    let changes = working_changes(path)?;
     let commits = if head.is_some() {
         history(path, &["--branches", "HEAD"], 0, 100)?
     } else {
@@ -255,6 +268,7 @@ fn snapshot(folder: &Path) -> Result<Snapshot, String> {
         stashes,
         submodules,
         cherry_picking,
+        has_upstream,
         ahead: divergence.map(|(ahead, _)| ahead),
         behind: divergence.map(|(_, behind)| behind),
     })
@@ -288,6 +302,14 @@ enum Action {
         path: String,
         resolution: ConflictResolution,
     },
+    ApplyHunk {
+        path: String,
+        staged: bool,
+        expected_diff: String,
+        hunk: usize,
+    },
+    StageAll,
+    UnstageAll,
     Stage {
         path: String,
     },
@@ -309,6 +331,10 @@ enum Action {
     Fetch,
     Pull,
     Push,
+    PublishBranch {
+        branch: String,
+        remote: String,
+    },
     Branch {
         name: String,
         start: Option<String>,
@@ -318,6 +344,10 @@ enum Action {
         hash: String,
     },
     DeleteTag {
+        name: String,
+    },
+    RenameBranch {
+        branch: String,
         name: String,
     },
     DeleteBranch {
@@ -450,6 +480,83 @@ fn discard_paths(root: &Path, paths: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+fn file_diff(root: &Path, path: &str, staged: bool, untracked: bool) -> Result<String, String> {
+    let mut args = vec!["diff", "--no-ext-diff", "--no-textconv", "--no-color"];
+    if untracked {
+        args.extend(["--no-index", "--", "/dev/null", path]);
+    } else {
+        if staged {
+            args.push("--cached");
+        }
+        args.extend(["--", path]);
+    }
+    output(run(root, &args)?, untracked)
+}
+
+fn apply_hunk(
+    root: &Path,
+    path: &str,
+    staged: bool,
+    expected_diff: &str,
+    hunk: usize,
+) -> Result<(), String> {
+    let diff = file_diff(root, path, staged, false)?;
+    if diff != expected_diff {
+        return Err("This diff changed. Refresh the repository and try again.".into());
+    }
+    if diff.contains('\u{fffd}') {
+        return Err("Partial staging requires a UTF-8 text diff.".into());
+    }
+    let (header, hunks) = diff
+        .split_once("\n@@ ")
+        .ok_or("This file has no selectable text changes.")?;
+    let headers: Vec<_> = header.lines().collect();
+    // Only alter file content. Applying mode, rename, or deletion headers
+    // would stage changes outside the selected hunk.
+    let [files, index, before, after] = headers.as_slice() else {
+        return Err("Partial staging is available for modified text files.".into());
+    };
+    if !files.starts_with("diff --git ")
+        || !index.starts_with("index ")
+        || !matches!(index.split_whitespace().last(), Some("100644" | "100755"))
+        || !(before.starts_with("--- a/") || before.starts_with("--- \"a/"))
+        || !(after.starts_with("+++ b/") || after.starts_with("+++ \"b/"))
+        || hunks.contains("\ndiff --git ")
+    {
+        return Err("Partial staging is available for modified text files.".into());
+    }
+    let selected = hunks
+        .split("\n@@ ")
+        .nth(hunk)
+        .ok_or("This hunk is no longer available.")?;
+    let patch = format!("{files}\n{before}\n{after}\n@@ {}\n", selected.trim_end_matches('\n'));
+
+    let mut args = vec!["apply", "--cached", "--whitespace=nowarn"];
+    if staged {
+        args.push("--reverse");
+    }
+    args.push("-");
+    git_with_input(root, &args, patch.as_bytes())
+}
+
+fn git_with_input(root: &Path, args: &[&str], input: &[u8]) -> Result<(), String> {
+    let mut child = Command::new("/usr/bin/git")
+        .current_dir(root)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("Could not start Git: {error}"))?;
+    let write = child
+        .stdin
+        .take()
+        .expect("piped Git stdin")
+        .write_all(input);
+    output(child.wait_with_output().map_err(|error| error.to_string())?, false)?;
+    write.map_err(|error| error.to_string())
+}
+
 fn perform(root: Option<String>, action: Action) -> Result<Response, String> {
     let action = match action {
         Action::Open { folder } => return snapshot(Path::new(&folder)).map(Response::Snapshot),
@@ -498,16 +605,7 @@ fn perform(root: Option<String>, action: Action) -> Result<Response, String> {
             staged,
             untracked,
         } => {
-            let mut args = vec!["diff", "--no-ext-diff", "--no-textconv", "--no-color"];
-            if untracked {
-                args.extend(["--no-index", "--", "/dev/null", &path]);
-            } else {
-                if staged {
-                    args.push("--cached");
-                }
-                args.extend(["--", &path]);
-            }
-            output(run(root, &args)?, untracked).map(Response::Text)
+            file_diff(root, &path, staged, untracked).map(Response::Text)
         }
         Action::OlderHistory {
             hash,
@@ -579,6 +677,43 @@ fn perform(root: Option<String>, action: Action) -> Result<Response, String> {
                     }
                     git(root, &["add", "--", &path])?;
                 }
+                Action::ApplyHunk {
+                    path,
+                    staged,
+                    expected_diff,
+                    hunk,
+                } => {
+                    apply_hunk(root, &path, staged, &expected_diff, hunk)?;
+                }
+                bulk @ (Action::StageAll | Action::UnstageAll) => {
+                    let unstage = matches!(bulk, Action::UnstageAll);
+                    let mut paths = Vec::new();
+                    for change in working_changes(root)? {
+                        let conflict = change.index == 'U' || change.worktree == 'U'
+                            || matches!((change.index, change.worktree), ('A', 'A') | ('D', 'D'));
+                        let included = if unstage {
+                            !matches!(change.index, ' ' | '?')
+                        } else {
+                            change.worktree != ' '
+                        };
+                        if !conflict && included {
+                            paths.extend_from_slice(change.path.as_bytes());
+                            paths.push(0);
+                        }
+                    }
+                    if !paths.is_empty() {
+                        let mut args = vec!["--literal-pathspecs"];
+                        if !unstage {
+                            args.push("add");
+                        } else if run(root, &["rev-parse", "--verify", "HEAD"])?.status.success() {
+                            args.extend(["restore", "--staged"]);
+                        } else {
+                            args.extend(["rm", "--cached", "-f"]);
+                        }
+                        args.extend(["--pathspec-from-file=-", "--pathspec-file-nul"]);
+                        git_with_input(root, &args, &paths)?;
+                    }
+                }
                 Action::Stage { path } => {
                     git(root, &["add", "--", &path])?;
                 }
@@ -621,6 +756,18 @@ fn perform(root: Option<String>, action: Action) -> Result<Response, String> {
                 Action::Push => {
                     git(root, &["push"])?;
                 }
+                Action::PublishBranch { branch, remote } => {
+                    let reference = format!("refs/heads/{branch}");
+                    let current = git(root, &["symbolic-ref", "--quiet", "HEAD"])?;
+                    if current.trim_end() != reference || has_upstream(root, &branch)? {
+                        return Err("The current branch or its upstream changed. Refresh and try again.".into());
+                    }
+                    if !git(root, &["remote"])?.lines().any(|name| name == remote) {
+                        return Err("Select a configured remote.".into());
+                    }
+                    let refspec = format!("{reference}:{reference}");
+                    git(root, &["push", "--set-upstream", "--", &remote, &refspec])?;
+                }
                 Action::Branch { name, start } => {
                     let mut args = vec!["branch", "--", &name];
                     if let Some(hash) = start.as_deref() {
@@ -642,6 +789,10 @@ fn perform(root: Option<String>, action: Action) -> Result<Response, String> {
                 }
                 Action::DeleteTag { name } => {
                     git(root, &["tag", "--delete", "--", &name])?;
+                }
+                Action::RenameBranch { branch, name } => {
+                    git(root, &["check-ref-format", &format!("refs/heads/{branch}")])?;
+                    git(root, &["branch", "--move", "--", &branch, &name])?;
                 }
                 Action::DeleteBranch { branch } => {
                     git(root, &["branch", "--delete", "--", &branch])?;
@@ -799,30 +950,155 @@ fn main() {
 mod tests {
     use super::*;
 
-    #[test]
-    fn local_workflow_from_untracked_file_to_commit() {
+    struct TestRepository(std::path::PathBuf);
+    impl Drop for TestRepository {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn test_repository() -> TestRepository {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static NEXT_REPOSITORY: AtomicUsize = AtomicUsize::new(0);
         let folder = std::env::temp_dir().join(format!(
-            "natalie-test-{}-{}",
+            "natalie-test-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            NEXT_REPOSITORY.fetch_add(1, Ordering::Relaxed),
         ));
         std::fs::create_dir(&folder).unwrap();
-        struct Cleanup(std::path::PathBuf);
-        impl Drop for Cleanup {
-            fn drop(&mut self) {
-                let _ = std::fs::remove_dir_all(&self.0);
-            }
-        }
-        let cleanup = Cleanup(folder);
-        let folder = &cleanup.0;
+        let repository = TestRepository(folder);
+        let folder = &repository.0;
         git(folder, &["init", "-b", "main"]).unwrap();
         git(folder, &["config", "user.name", "Natalie Test"]).unwrap();
         git(folder, &["config", "user.email", "test@example.invalid"]).unwrap();
         git(folder, &["config", "commit.gpgsign", "false"]).unwrap();
         git(folder, &["config", "core.hooksPath", "/dev/null"]).unwrap();
+        repository
+    }
+
+    #[test]
+    fn stages_and_unstages_all_without_touching_conflicts() {
+        let repository = test_repository();
+        let folder = &repository.0;
+        let root = Some(folder.to_str().unwrap().into());
+        for file in ["modified.txt", "removed.txt"] {
+            std::fs::write(folder.join(file), "base").unwrap();
+        }
+        git(folder, &["add", "--all"]).unwrap();
+        git(folder, &["commit", "-m", "Base"]).unwrap();
+        std::fs::write(folder.join("modified.txt"), "new content").unwrap();
+        std::fs::remove_file(folder.join("removed.txt")).unwrap();
+        std::fs::write(folder.join("new [literal].txt"), "new file").unwrap();
+
+        let blob = git(folder, &["rev-parse", "HEAD:modified.txt"]).unwrap();
+        let blob = blob.trim();
+        let unmerged = format!("100644 {blob} 2\tconflict.txt\n100644 {blob} 3\tconflict.txt\n");
+        git_with_input(folder, &["update-index", "--index-info"], unmerged.as_bytes()).unwrap();
+        std::fs::write(folder.join("conflict.txt"), "unresolved").unwrap();
+
+        let Response::Snapshot(next) = perform(root.clone(), Action::StageAll).unwrap() else {
+            panic!("Expected repository snapshot");
+        };
+        let conflict = next.changes.iter().find(|change| change.path == "conflict.txt").unwrap();
+        assert_eq!((conflict.index, conflict.worktree), ('A', 'A'));
+        let staged: Vec<_> = next.changes.iter().filter(|change| change.worktree == ' ').collect();
+        assert_eq!(staged.iter().map(|change| change.index).collect::<String>(), "MAD");
+        perform(root.clone(), Action::StageAll).unwrap();
+        let Response::Snapshot(next) = perform(root.clone(), Action::UnstageAll).unwrap() else {
+            panic!("Expected repository snapshot");
+        };
+        let conflict = next.changes.iter().find(|change| change.path == "conflict.txt").unwrap();
+        assert_eq!((conflict.index, conflict.worktree), ('A', 'A'));
+        assert_eq!(next.changes.len(), 4);
+        assert!(next.changes.iter().filter(|change| change.path != "conflict.txt")
+            .all(|change| matches!(change.index, ' ' | '?')));
+        assert_eq!(std::fs::read_to_string(folder.join("modified.txt")).unwrap(), "new content");
+        assert!(folder.join("new [literal].txt").exists());
+        assert!(!folder.join("removed.txt").exists());
+        perform(root, Action::UnstageAll).unwrap();
+    }
+
+    #[test]
+    fn publishes_current_branch_and_sets_upstream() {
+        let repository = test_repository();
+        let folder = &repository.0;
+        let remote = folder.join(".git/test-remote.git");
+        git(folder, &["init", "--bare", remote.to_str().unwrap()]).unwrap();
+        git(folder, &["remote", "add", "origin", remote.to_str().unwrap()]).unwrap();
+        git(folder, &["commit", "--allow-empty", "-m", "Base"]).unwrap();
+        git(folder, &["switch", "-c", "feature/test"]).unwrap();
+        assert!(!snapshot(folder).unwrap().has_upstream);
+        let publish = |branch: &str, remote: &str| {
+            perform(
+                Some(folder.to_str().unwrap().into()),
+                Action::PublishBranch { branch: branch.into(), remote: remote.into() },
+            )
+        };
+        assert!(publish("main", "origin").is_err());
+        assert!(publish("feature/test", "missing").is_err());
+        let Response::Snapshot(published) = publish("feature/test", "origin").unwrap() else {
+            panic!("Expected repository snapshot");
+        };
+        assert!(published.has_upstream);
+        assert_eq!(published.ahead, Some(0));
+        assert_eq!(
+            git(folder, &["rev-parse", "--symbolic-full-name", "@{upstream}"]).unwrap().trim(),
+            "refs/remotes/origin/feature/test"
+        );
+        assert!(publish("feature/test", "origin").is_err());
+    }
+
+    #[test]
+    fn stages_and_unstages_individual_hunks() {
+        let repository = test_repository();
+        let folder = &repository.0;
+        let path = "notes [draft].txt";
+        let original = (0..30).map(|line| format!("line {line}\n")).collect::<String>();
+        std::fs::write(folder.join(path), &original).unwrap();
+        git(folder, &["add", "--", path]).unwrap();
+        git(folder, &["commit", "-m", "Base"]).unwrap();
+
+        let edited = original.replace("line 2\n", "first edit\n").replace("line 25\n", "second edit\n");
+        std::fs::write(folder.join(path), &edited).unwrap();
+        let complete = file_diff(folder, path, false, false).unwrap();
+        let apply = |staged, expected_diff: &str, hunk| {
+            perform(
+                Some(folder.to_str().unwrap().into()),
+                Action::ApplyHunk {
+                    path: path.into(),
+                    staged,
+                    expected_diff: expected_diff.into(),
+                    hunk,
+                },
+            )
+        };
+        apply(false, &complete, 1).unwrap();
+        assert!(apply(false, &complete, 0).is_err());
+        let working = file_diff(folder, path, false, false).unwrap();
+        assert!(working.contains("+first edit"));
+        assert!(!working.contains("+second edit"));
+        let staged = file_diff(folder, path, true, false).unwrap();
+        assert!(staged.contains("+second edit"));
+        assert!(!staged.contains("+first edit"));
+
+        apply(false, &working, 0).unwrap();
+        let both = file_diff(folder, path, true, false).unwrap();
+        apply(true, &both, 1).unwrap();
+        let staged = file_diff(folder, path, true, false).unwrap();
+        assert!(staged.contains("+first edit"));
+        assert!(!staged.contains("+second edit"));
+        assert!(file_diff(folder, path, false, false).unwrap().contains("+second edit"));
+        assert_eq!(std::fs::read_to_string(folder.join(path)).unwrap(), edited);
+    }
+
+    #[test]
+    fn local_workflow_from_untracked_file_to_commit() {
+        let cleanup = test_repository();
+        let folder = &cleanup.0;
         let path = "a [literal].txt".to_string();
         std::fs::write(folder.join(&path), "first line\n").unwrap();
         let opened = snapshot(folder).unwrap();
@@ -913,6 +1189,9 @@ mod tests {
         assert!(diff.contains("+first line"));
         perform(root.clone(), Action::Stage { path: path.clone() }).unwrap();
         perform(root.clone(), Action::Unstage { path: path.clone() }).unwrap();
+        assert_eq!(snapshot(folder).unwrap().changes[0].index, '?');
+        perform(root.clone(), Action::StageAll).unwrap();
+        perform(root.clone(), Action::UnstageAll).unwrap();
         assert_eq!(snapshot(folder).unwrap().changes[0].index, '?');
         perform(root.clone(), Action::Stage { path }).unwrap();
         let Response::Snapshot(committed) = perform(
@@ -1142,6 +1421,29 @@ mod tests {
             hash
         );
         checkout_branch(folder, "main").unwrap();
+        let rename = |branch: &str, name: &str| {
+            perform(
+                Some(local.root.clone()),
+                Action::RenameBranch {
+                    branch: branch.into(),
+                    name: name.into(),
+                },
+            )
+        };
+        assert!(rename("main", "from-detached").is_err());
+        assert!(rename("main", "invalid name").is_err());
+        let Response::Snapshot(renamed) = rename("main", "renamed-main").unwrap() else {
+            panic!("Expected rename snapshot");
+        };
+        assert_eq!(renamed.branch, "renamed-main");
+        assert_eq!(renamed.head, committed.head);
+        rename("renamed-main", "main").unwrap();
+        rename("from-detached", "feature/renamed").unwrap();
+        assert_eq!(
+            git(folder, &["rev-parse", "refs/heads/feature/renamed"]).unwrap().trim(),
+            hash
+        );
+        rename("feature/renamed", "from-detached").unwrap();
         let delete = |branch: &str| {
             perform(
                 Some(local.root.clone()),

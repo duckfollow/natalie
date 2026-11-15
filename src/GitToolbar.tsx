@@ -19,7 +19,9 @@ import {
 
 export type GitAction =
   | { kind: "fetch" | "pull" | "push" }
+  | { kind: "publish_branch"; branch: string; remote: string }
   | { kind: "branch"; name: string; start?: string }
+  | { kind: "rename_branch"; branch: string; name: string }
   | { kind: "tag"; name: string; hash: string }
   | { kind: "merge"; branch: string }
   | { kind: "stash"; message: string }
@@ -36,15 +38,19 @@ const operations = [
   { label: "Origin", icon: Settings2 },
 ] as const;
 
-type Prompt = "Branch" | "Merge" | "Stash" | "Origin";
+type Prompt = "Publish" | "Branch" | "Merge" | "Stash" | "Origin";
 
 export function GitToolbar({
   busy,
   branches,
   currentBranch,
+  remotes,
+  canPush,
+  hasUpstream,
   tagCommit,
   branchCommit,
-  onBranchCommitClose,
+  renameBranch,
+  onPromptClose,
   originUrl,
   ahead,
   behind,
@@ -55,9 +61,13 @@ export function GitToolbar({
   busy: boolean;
   branches: string[];
   currentBranch: string;
+  remotes: string[];
+  canPush: boolean;
+  hasUpstream: boolean;
   tagCommit: string | null;
   branchCommit: string | null;
-  onBranchCommitClose: () => void;
+  renameBranch: string | null;
+  onPromptClose: () => void;
   originUrl: string | null;
   ahead: number | null;
   behind: number | null;
@@ -67,11 +77,11 @@ export function GitToolbar({
 }) {
   const [toolbarPrompt, setPrompt] = useState<Prompt | null>(null);
   const [value, setValue] = useState("");
-  const prompt = tagCommit ? "Tag" : branchCommit ? "Branch" : toolbarPrompt;
+  const prompt = renameBranch ? "Rename" : tagCommit ? "Tag" : branchCommit ? "Branch" : toolbarPrompt;
   function closePrompt() {
     setValue("");
     setPrompt(null);
-    onBranchCommitClose();
+    onPromptClose();
   }
   const dialog = useRef<HTMLDialogElement>(null);
   const mergeBranches = branches.filter((branch) => branch !== currentBranch);
@@ -89,9 +99,15 @@ export function GitToolbar({
           <button
             key={label}
             type="button"
-            title={label === "Pull" ? "Pull using fast-forward only" : label}
+            title={
+              label === "Pull" ? "Pull using fast-forward only"
+                : label === "Push" && !canPush ? "Check out a branch with a commit to push"
+                : label === "Push" && !hasUpstream ? (remotes.length ? "Publish branch" : "Add a remote to publish")
+                : label
+            }
             disabled={
               busy ||
+              (label === "Push" && !canPush) ||
               (label === "Merge" && !mergeBranches.length) ||
               (label === "Stash" && !changes)
             }
@@ -104,7 +120,15 @@ export function GitToolbar({
                   onAction({ kind: "pull" });
                   break;
                 case "Push":
-                  onAction({ kind: "push" });
+                  if (hasUpstream) {
+                    onAction({ kind: "push" });
+                  } else if (remotes.length) {
+                    setValue(remotes.includes("origin") ? "origin" : remotes[0]);
+                    setPrompt("Publish");
+                  } else {
+                    setValue("");
+                    setPrompt("Origin");
+                  }
                   break;
                 case "Fetch":
                   onAction({ kind: "fetch" });
@@ -148,13 +172,14 @@ export function GitToolbar({
           onCancel={closePrompt}
         >
           <header>
+            {prompt === "Publish" && <ArrowUpCircle size={20} aria-hidden="true" />}
             {prompt === "Origin" && <Cloud size={20} aria-hidden="true" />}
             {prompt === "Tag" && <Tag size={20} aria-hidden="true" />}
-            {prompt === "Branch" && <GitBranch size={20} aria-hidden="true" />}
+            {(prompt === "Branch" || prompt === "Rename") && <GitBranch size={20} aria-hidden="true" />}
             {prompt === "Merge" && <GitMerge size={20} aria-hidden="true" />}
             {prompt === "Stash" && <Layers3 size={20} aria-hidden="true" />}
             <h2 id="git-action-title">
-              {prompt === "Tag" ? "Create tag" : prompt === "Branch"
+              {prompt === "Publish" ? "Publish branch" : prompt === "Rename" ? "Rename branch" : prompt === "Tag" ? "Create tag" : prompt === "Branch"
                 ? "Create branch"
                 : prompt === "Merge"
                   ? `Merge into ${currentBranch}`
@@ -170,8 +195,13 @@ export function GitToolbar({
             className="repo-picker-content git-action-form"
             onSubmit={(event) => {
               event.preventDefault();
+              if (busy || (prompt !== "Stash" && !value.trim()) || value.trim() === renameBranch) return;
+              if (prompt === "Publish" && canPush && !hasUpstream && remotes.includes(value))
+                onAction({ kind: "publish_branch", branch: currentBranch, remote: value });
               if (prompt === "Tag" && tagCommit)
                 onAction({ kind: "tag", name: value.trim(), hash: tagCommit });
+              if (prompt === "Rename" && renameBranch)
+                onAction({ kind: "rename_branch", branch: renameBranch, name: value.trim() });
               if (prompt === "Branch")
                 onAction({ kind: "branch", name: value.trim(), start: branchCommit ?? undefined });
               if (prompt === "Merge")
@@ -183,7 +213,17 @@ export function GitToolbar({
               closePrompt();
             }}
           >
-            {prompt === "Merge" ? (
+            {prompt === "Publish" ? (
+              <>
+                <label>
+                  Remote
+                  <select autoFocus value={value} onChange={(event) => setValue(event.target.value)}>
+                    {remotes.map((remote) => <option key={remote}>{remote}</option>)}
+                  </select>
+                </label>
+                <p>Push <code>{currentBranch}</code> and set <code>{value}/{currentBranch}</code> as its upstream.</p>
+              </>
+            ) : prompt === "Merge" ? (
               <div className="merge-branch-flow">
                 <label>
                   Source branch
@@ -224,10 +264,10 @@ export function GitToolbar({
                 </span>
                 <span id="origin-url-help">Use an HTTPS URL, SSH address, or local repository path.</span>
               </label>
-            ) : prompt === "Branch" || prompt === "Tag" ? (
+            ) : prompt === "Branch" || prompt === "Tag" || prompt === "Rename" ? (
               <>
                 <label>
-                  {tagCommit ? "Tag name" : "Branch name"}
+                  {renameBranch ? "New branch name" : tagCommit ? "Tag name" : "Branch name"}
                   <span className="repository-action-field">
                     <GitBranch size={15} aria-hidden="true" />
                     <input
@@ -243,7 +283,7 @@ export function GitToolbar({
                   </span>
                 </label>
                 <p id="branch-start-point" className="branch-start-point">
-                  Starts from <code title={tagCommit ?? branchCommit ?? undefined}>{(tagCommit ?? branchCommit)?.slice(0, 12) ?? currentBranch}</code>
+                  {renameBranch ? <>Current name <code>{renameBranch}</code></> : <>Starts from <code title={tagCommit ?? branchCommit ?? undefined}>{(tagCommit ?? branchCommit)?.slice(0, 12) ?? currentBranch}</code></>}
                 </p>
               </>
             ) : (
@@ -273,12 +313,16 @@ export function GitToolbar({
               </button>
               <button
                 className="primary"
-                disabled={busy || (prompt !== "Stash" && !value.trim())}
+                disabled={busy || (prompt !== "Stash" && !value.trim()) || value.trim() === renameBranch}
               >
-                {prompt === "Origin"
+                {prompt === "Publish"
+                  ? <><ArrowUpCircle size={14} aria-hidden="true" /> Publish branch</>
+                  : prompt === "Origin"
                   ? originUrl == null
                     ? <><Plus size={14} aria-hidden="true" /> Add origin</>
                     : <><Save size={14} aria-hidden="true" /> Save changes</>
+                  : prompt === "Rename"
+                    ? <><Save size={14} aria-hidden="true" /> Rename branch</>
                   : prompt === "Tag"
                     ? <><Tag size={14} aria-hidden="true" /> Create tag</>
                     : prompt === "Branch"

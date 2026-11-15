@@ -30,7 +30,7 @@ import {
   List,
 } from "lucide-react";
 import type { CSSProperties } from "react";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
@@ -252,6 +252,69 @@ function DiffLines({ lines, patch = false }: { lines: string[]; patch?: boolean 
   );
 }
 
+function CommitMetadata({ lines, subject }: { lines: string[]; subject: string }) {
+  const separator = lines.indexOf("");
+  const header = (separator === -1 ? lines : lines.slice(0, separator)).join("\n");
+  const fields = /^commit ([0-9a-f]+)\n(?:Merge: +([^\n]+)\n)?Author: +([^\n]+)\nAuthorDate: +([^\n]+)\nCommit: +([^\n]+)\nCommitDate: +([^\n]+)$/.exec(header);
+  if (!fields) return <DiffLines lines={lines} />;
+
+  const [, hash, parents, author, authored, committer, committed] = fields;
+  const message = separator === -1 ? "" : lines.slice(separator + 1)
+    .map((line) => line.replace(/^ {4}/, ""))
+    .join("\n").trimEnd();
+  const body = message.startsWith(subject + "\n")
+    ? message.slice(subject.length + 1).replace(/^\n+/, "")
+    : message === subject ? "" : message;
+
+  return (
+    <>
+      <dl className="diff-metadata-fields">
+        <dt>Commit</dt><dd><code>{hash}</code></dd>
+        {parents && <><dt>Merge parents</dt><dd><code>{parents}</code></dd></>}
+        <dt>Author</dt><dd>{author}</dd>
+        <dt>Authored</dt><dd>{authored}</dd>
+        <dt>Committer</dt><dd>{committer}</dd>
+        <dt>Committed</dt><dd>{committed}</dd>
+      </dl>
+      {body && <p className="commit-metadata-message">{body}</p>}
+    </>
+  );
+}
+
+const patchMetadataLabels = [
+  ["diff --git ", "Paths"],
+  ["index ", "Blob IDs"],
+  ["--- ", "Before"],
+  ["+++ ", "After"],
+  ["old mode ", "Previous mode"],
+  ["new mode ", "New mode"],
+  ["new file mode ", "New file mode"],
+  ["deleted file mode ", "Deleted file mode"],
+  ["similarity index ", "Similarity"],
+  ["dissimilarity index ", "Dissimilarity"],
+  ["rename from ", "Renamed from"],
+  ["rename to ", "Renamed to"],
+  ["copy from ", "Copied from"],
+  ["copy to ", "Copied to"],
+] as const;
+
+function PatchMetadata({ lines }: { lines: string[] }) {
+  return (
+    <dl className="diff-metadata-fields">
+      {lines.filter((line) => line.trim()).map((line, index) => {
+        const field = patchMetadataLabels.find(([prefix]) => line.startsWith(prefix));
+        const value = field ? line.slice(field[0].length) : line;
+        return (
+          <Fragment key={index}>
+            <dt>{field?.[1] ?? "Git detail"}</dt>
+            <dd><code>{value}</code></dd>
+          </Fragment>
+        );
+      })}
+    </dl>
+  );
+}
+
 function DiffFiles({ text, commit }: { text: string; commit?: Commit }) {
   const { intro, files } = useMemo(() => splitDiff(text), [text]);
   const [fileQuery, setFileQuery] = useState("");
@@ -345,7 +408,7 @@ function DiffFiles({ text, commit }: { text: string; commit?: Commit }) {
             {intro.some((line) => line.trim()) && (
               <details className="diff-commit-raw">
                 <summary>Commit metadata</summary>
-                <DiffLines lines={intro} />
+                <CommitMetadata lines={intro} subject={commit.subject} />
               </details>
             )}
             {!files.length && <p>No file diff in this view.</p>}
@@ -386,7 +449,7 @@ function DiffFiles({ text, commit }: { text: string; commit?: Commit }) {
             {metadata.length > 0 && (
               <details className="diff-patch-metadata">
                 <summary>Patch metadata</summary>
-                <DiffLines lines={metadata} />
+                <PatchMetadata lines={metadata} />
               </details>
             )}
           </details>
@@ -439,13 +502,35 @@ function App() {
     return () => media.removeEventListener("change", update);
   }, []);
   useLayoutEffect(() => {
-    document.documentElement.dataset.theme = theme;
+    const root = document.documentElement;
+    if (root.dataset.theme === theme) return;
+
+    if (
+      !root.dataset.theme ||
+      typeof document.startViewTransition !== "function" ||
+      matchMedia("(prefers-reduced-motion: reduce)").matches
+    ) {
+      root.dataset.theme = theme;
+      return;
+    }
+
+    let current = true;
+    const transition = document.startViewTransition(() => {
+      if (current) root.dataset.theme = theme;
+    });
+    return () => {
+      current = false;
+      transition.skipTransition();
+    };
+  }, [theme]);
+
+  useLayoutEffect(() => {
     try {
       localStorage.setItem(appearanceKey, appearance);
     } catch {
       // The choice still applies for this session.
     }
-  }, [appearance, theme]);
+  }, [appearance]);
   const [recent, setRecent] = useState(readRecentRepositories);
   const [picker, setPicker] = useState<"repositories" | "clone" | null>(null);
   useEffect(() => {
@@ -625,7 +710,7 @@ function App() {
   const historyEnd = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (view !== "history" || !root || !firstPage || !commits?.length || !canLoadOlder || older?.error || older?.loading) return;
+    if (view === "changes" || !root || !firstPage || !commits?.length || !canLoadOlder || older?.error || older?.loading) return;
     const marker = historyEnd.current;
     if (!marker) return;
     const observer = new IntersectionObserver(([entry]) => {
@@ -719,7 +804,12 @@ function App() {
 
   const pendingPickDialog = useRef<HTMLDialogElement>(null);
   const previewHash = "pending-cherry-pick";
-  const graphCommits = [...(commits ?? [])];
+  const query = search.trim().toLowerCase();
+  const graphCommits = view === "search" && query
+    ? (commits ?? []).filter((commit) =>
+        `${commit.subject} ${commit.author} ${commit.hash} ${commit.refs}`.toLowerCase().includes(query),
+      )
+    : [...(commits ?? [])];
   const headIndex = graphCommits.findIndex(({ hash }) => hash === repo?.head);
   if (view === "history" && !remoteHash && pendingPicks.length && headIndex >= 0) {
     graphCommits.splice(headIndex, 0, {
@@ -739,7 +829,8 @@ function App() {
   const graphThreshold = Math.max(180, graphWidth + 122);
   const historyWidth = root ? historyWidths[root] : undefined;
   const graphOnly = history && historyWidth != null && historyWidth < graphThreshold;
-  const listVisible = history || panels.list;
+  const [historyListVisible, setHistoryListVisible] = useState(true);
+  const listVisible = history ? historyListVisible : panels.list;
   const preferredWidth = history ? historyWidth : listWidth;
 
   useEffect(() => {
@@ -1141,6 +1232,7 @@ function App() {
           <UpdateNotice />
           <div
             className="appearance-control"
+            data-appearance={appearance}
             role="group"
             aria-label="Appearance"
           >
@@ -1244,24 +1336,25 @@ function App() {
               }
             />
           </div>
-          {!history && <div
+          <div
             className="workspace-layout"
             role="group"
             aria-label="Workspace layout"
           >
             <button
               type="button"
-              title={`${panels.list ? "Hide" : "Show"} File and commit list`}
-              aria-label="File and commit list"
+              title={`${listVisible ? "Hide" : "Show"} ${history ? "Commit List" : "File and commit list"}`}
+              aria-label={history ? "Commit List" : "File and commit list"}
               aria-controls="workspace-list"
-              aria-expanded={panels.list}
-              onClick={() =>
-                setPanels((current) => ({ ...current, list: !current.list }))
-              }
+              aria-expanded={listVisible}
+              onClick={() => {
+                if (history) setHistoryListVisible((visible) => !visible);
+                else setPanels((current) => ({ ...current, list: !current.list }));
+              }}
             >
               <List size={15} aria-hidden="true" />
             </button>
-          </div>}
+          </div>
         </div>
       )}
       {error && !picker && (
@@ -1346,7 +1439,7 @@ function App() {
         <div
           className="workspace"
           data-navigation={panels.navigation ? "open" : "collapsed"}
-          data-list={graphOnly ? "graph" : listVisible ? "open" : "closed"}
+          data-list={listVisible ? (graphOnly ? "graph" : "open") : "closed"}
           data-resizing-diff={resizingDiff}
           style={{
             "--graph-list-width": `${laneX(graph.width - 1, true) + lanePadding + 20}px`,
@@ -1549,13 +1642,6 @@ function App() {
                       </button>
                     );
                   }
-                  if (
-                    view === "search" &&
-                    !`${commit.subject} ${commit.author} ${commit.hash} ${commit.refs}`
-                      .toLowerCase()
-                      .includes(search.trim().toLowerCase())
-                  )
-                    return null;
                   const pickOrder = pendingPicks.findIndex((pick) => pick.hash === commit.hash) + 1;
                   return (
                     <button
@@ -1652,7 +1738,10 @@ function App() {
                     </button>
                   );
                 })}
-                {view === "history" && !!commits?.length && (
+                {view === "search" && !!commits?.length && !graphCommits.length && !canLoadOlder && (
+                  <p className="group-empty">No matching commits.</p>
+                )}
+                {!!commits?.length && (
                   <div className="history-pagination" ref={historyEnd}>
                     {older?.error ? (
                       <button type="button" title={older.error} onClick={() => setOlderHistory({ ...older, error: undefined })}>Retry</button>

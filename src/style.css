@@ -62,6 +62,14 @@
   --merge-border: #cfbcdf;
 }
 
+::view-transition {
+  pointer-events: none;
+}
+::view-transition-group(root) {
+  animation-duration: 440ms;
+  animation-timing-function: ease-in-out;
+}
+
 * {
   box-sizing: border-box;
 }
@@ -544,9 +552,9 @@ nav span,
 }
 .diff span {
   display: block;
-  width: max-content;
-  min-width: 100%;
   padding: 0 14px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .diff .added {
   background: var(--diff-added-background);
@@ -1251,13 +1259,39 @@ nav button[aria-pressed="true"] {
 }
 
 .appearance-control {
+  --appearance-button-width: 29px;
+  --appearance-gap: 2px;
+  --appearance-padding: 3px;
+  --appearance-index: 0;
+  position: relative;
   display: inline-flex;
   align-items: stretch;
-  gap: 2px;
-  padding: 3px;
+  gap: var(--appearance-gap);
+  padding: var(--appearance-padding);
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--surface);
+}
+.appearance-control[data-appearance="light"] {
+  --appearance-index: 1;
+}
+.appearance-control[data-appearance="dark"] {
+  --appearance-index: 2;
+}
+.appearance-control::before {
+  position: absolute;
+  inset-block: var(--appearance-padding);
+  inset-inline-start: calc(var(--appearance-padding) + var(--appearance-index) * (var(--appearance-button-width) + var(--appearance-gap)));
+  width: var(--appearance-button-width);
+  border-radius: 5px;
+  background: var(--active);
+  pointer-events: none;
+  content: "";
+}
+@media (prefers-reduced-motion: no-preference) {
+  .appearance-control::before {
+    transition: inset-inline-start 180ms ease-out;
+  }
 }
 .header-actions > .header-secondary {
   border-color: transparent;
@@ -1274,16 +1308,17 @@ nav button[aria-pressed="true"] {
 .header-actions .appearance-control button {
   display: grid;
   place-items: center;
-  width: 29px;
+  position: relative;
+  width: var(--appearance-button-width);
   padding: 0;
   border: 0;
   border-radius: 5px;
   background: transparent;
   color: var(--muted);
 }
-.header-actions .appearance-control button:hover,
+.header-actions .appearance-control button:hover:not(:disabled),
 .header-actions .appearance-control button[aria-pressed="true"] {
-  background: var(--active);
+  background: transparent;
   color: var(--accent);
 }
 
@@ -1300,6 +1335,28 @@ nav button[aria-pressed="true"] {
   align-items: center;
   gap: 5px;
   white-space: nowrap;
+}
+.diff-commit-actions button {
+  gap: 7px;
+  min-height: 32px;
+  padding: 6px 9px;
+  border-color: transparent;
+  background: transparent;
+}
+.diff-commit-actions button:hover:not(:disabled),
+.diff-commit-actions button:focus-visible {
+  background: var(--active);
+}
+.diff-commit-actions .commit-reset-action {
+  position: relative;
+  margin-inline-start: 9px;
+}
+.diff-commit-actions .commit-reset-action::before {
+  position: absolute;
+  inset-block: 5px;
+  inset-inline-start: -8px;
+  border-inline-start: 1px solid var(--line);
+  content: "";
 }
 .diff-commit-menu {
   display: none;
@@ -1338,6 +1395,40 @@ nav button[aria-pressed="true"] {
 }
 .diff-commit-menu-items button {
   justify-content: flex-start;
+}
+.diff-commit-menu > summary:hover,
+.diff-commit-menu[open] > summary {
+  background: var(--active);
+}
+.diff-commit-menu > summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.diff-commit-menu > .diff-commit-menu-items {
+  gap: 2px;
+  min-width: 176px;
+}
+.diff-commit-menu > .diff-commit-menu-items button {
+  position: relative;
+  gap: 9px;
+  min-height: 32px;
+  padding: 6px 9px;
+  border-color: transparent;
+  background: transparent;
+  text-align: start;
+}
+.diff-commit-menu > .diff-commit-menu-items button:hover:not(:disabled),
+.diff-commit-menu > .diff-commit-menu-items button:focus-visible {
+  background: var(--active);
+}
+.diff-commit-menu > .diff-commit-menu-items .commit-reset-action {
+  margin-top: 7px;
+}
+.diff-commit-menu > .diff-commit-menu-items .commit-reset-action::before {
+  position: absolute;
+  inset: -6px 3px auto;
+  border-top: 1px solid var(--line);
+  content: "";
 }
 @container diff-panel (max-width: 770px) {
   .diff-commit-actions {
@@ -1513,8 +1604,7 @@ nav button[aria-pressed="true"] {
   padding-inline: 0;
   background: var(--surface);
 }
-.workspace[data-list="graph"] .history button:focus-visible,
-.workspace[data-list="graph"]:not([data-resizing-diff="true"]) .history button:hover {
+.workspace[data-list="graph"] .history button:focus-visible {
   background: var(--active);
 }
 .workspace[data-list="graph"] .history button.selected .commit-dot {
@@ -1600,6 +1690,34 @@ nav button[aria-pressed="true"] {
 }
 .diff-commit-raw summary {
   cursor: pointer;
+}
+.diff-metadata-fields {
+  display: grid;
+  grid-template-columns: minmax(70px, max-content) minmax(0, 1fr);
+  gap: 6px 14px;
+  margin: 8px 0 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--toolbar);
+  line-height: 1.5;
+}
+.diff-metadata-fields dt {
+  font-weight: 600;
+}
+.diff-metadata-fields dd {
+  margin: 0;
+  color: var(--text);
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.commit-metadata-message {
+  margin: 10px 0 0;
+  color: var(--text);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
 }
 .diff-commit-card > p {
   margin: 8px 0 0;

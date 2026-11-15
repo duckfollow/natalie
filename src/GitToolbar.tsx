@@ -1,3 +1,4 @@
+import { Dropdown } from "./Dropdown";
 import { useEffect, useRef, useState } from "react";
 import {
   ArrowDown,
@@ -215,28 +216,24 @@ export function GitToolbar({
           >
             {prompt === "Publish" ? (
               <>
-                <label>
-                  Remote
-                  <select autoFocus value={value} onChange={(event) => setValue(event.target.value)}>
-                    {remotes.map((remote) => <option key={remote}>{remote}</option>)}
-                  </select>
-                </label>
+                <Dropdown
+                  label="Remote"
+                  options={remotes.map((remote) => ({ value: remote, label: remote }))}
+                  value={value}
+                  onChange={setValue}
+                  autoFocus
+                />
                 <p>Push <code>{currentBranch}</code> and set <code>{value}/{currentBranch}</code> as its upstream.</p>
               </>
             ) : prompt === "Merge" ? (
               <div className="merge-branch-flow">
-                <label>
-                  Source branch
-                  <select
-                    autoFocus
-                    value={value}
-                    onChange={(event) => setValue(event.target.value)}
-                  >
-                    {mergeBranches.map((branch) => (
-                      <option key={branch}>{branch}</option>
-                    ))}
-                  </select>
-                </label>
+                <Dropdown
+                  label="Source branch"
+                  options={mergeBranches.map((branch) => ({ value: branch, label: branch }))}
+                  value={value}
+                  onChange={setValue}
+                  autoFocus
+                />
                 <ArrowDown size={15} aria-hidden="true" />
                 <div className="merge-destination">
                   <span>Destination branch</span>

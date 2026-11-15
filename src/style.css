@@ -1273,13 +1273,71 @@ nav button[aria-pressed="true"] {
 .git-action-form {
   padding-top: 14px;
 }
-.git-action-form select {
-  padding: 8px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--surface);
+.dropdown {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+}
+.dropdown-label {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+.dropdown-trigger,
+.dropdown-options li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 36px;
+  padding: 7px 10px;
   color: var(--text);
-  font: inherit;
+  text-align: start;
+}
+.dropdown-trigger {
+  width: 100%;
+  border-radius: 7px;
+  background: var(--surface);
+}
+.dropdown-trigger svg,
+.dropdown-options svg {
+  color: var(--accent);
+}
+.dropdown-trigger[aria-expanded="true"] {
+  border-color: var(--accent);
+}
+.dropdown-trigger[aria-expanded="true"] svg {
+  transform: rotate(180deg);
+}
+.dropdown-trigger span,
+.dropdown-options span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.dropdown-placeholder {
+  color: var(--muted);
+}
+.dropdown-options {
+  max-height: min(216px, 30vh);
+  margin: 0;
+  padding: 4px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--toolbar);
+  list-style: none;
+}
+.dropdown-options li {
+  border-radius: 5px;
+  cursor: pointer;
+}
+.dropdown-options li[aria-selected="true"] {
+  color: var(--accent);
+}
+.dropdown-options li[data-active="true"],
+.dropdown-options li:hover {
+  background: var(--active);
 }
 .git-action-form footer {
   display: flex;

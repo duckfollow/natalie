@@ -1,3 +1,4 @@
+import { Dropdown } from "./Dropdown";
 import { useEffect, useRef, useState } from "react";
 import { GitPullRequestArrow, ListChecks, X } from "lucide-react";
 import type { Commit } from "./history-graph";
@@ -61,23 +62,20 @@ export function CherryPickDialog({
           </div>
         </section>
         {merge && (
-          <label>
-            Mainline parent
-            <select
-              required
-              autoFocus
+          <div className="cherry-mainline">
+            <Dropdown
+              label="Mainline parent"
+              placeholder="Choose a parent"
+              options={commit.parents.map((hash, index) => ({
+                value: String(index + 1),
+                label: `Parent ${index + 1} · ${hash.slice(0, 7)}`,
+              }))}
               value={mainline}
-              onChange={(event) => setMainline(event.target.value)}
-            >
-              <option value="">Choose which parent to compare against</option>
-              {commit.parents.map((hash, index) => (
-                <option key={index} value={index + 1}>
-                  Parent {index + 1} · {hash.slice(0, 7)}
-                </option>
-              ))}
-            </select>
-            <span>Choose the parent Git should use as the base for this merge commit’s changes.</span>
-          </label>
+              onChange={setMainline}
+              autoFocus
+            />
+            <p>Choose the parent Git should use as the base for this merge commit’s changes.</p>
+          </div>
         )}
         <label className="cherry-pick-review">
           <input type="checkbox" checked={noCommit} onChange={(event) => setNoCommit(event.target.checked)} />

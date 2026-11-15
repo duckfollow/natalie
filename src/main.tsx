@@ -66,6 +66,7 @@ type Snapshot = {
   stashes: Reference[];
   submodules: string[];
   cherry_picking: boolean;
+  has_upstream: boolean;
   ahead: number | null;
   behind: number | null;
 };
@@ -315,8 +316,20 @@ function PatchMetadata({ lines }: { lines: string[] }) {
   );
 }
 
-function DiffFiles({ text, commit }: { text: string; commit?: Commit }) {
+function DiffFiles({ text, commit, hunkAction }: {
+  text: string;
+  commit?: Commit;
+  hunkAction?: { label: string; disabled: boolean; apply: (index: number) => void };
+}) {
   const { intro, files } = useMemo(() => splitDiff(text), [text]);
+  const metadata = files[0]?.metadata;
+  const canApplyHunks = hunkAction && files.length === 1 && metadata?.length === 4
+    && / 100(?:644|755)$/.test(metadata[1])
+    && /^--- "?a\//.test(metadata[2]) && /^\+\+\+ "?b\//.test(metadata[3])
+    && !text.includes("\uFFFD");
+  const hunkStarts = canApplyHunks
+    ? files[0].lines.flatMap((line, index) => line.startsWith("@@ ") ? [index] : [])
+    : [];
   const [fileQuery, setFileQuery] = useState("");
   const filePicker = useRef<HTMLDialogElement>(null);
   const matchingFiles = files.map((file, index) => ({ ...file, index }))
@@ -445,7 +458,19 @@ function DiffFiles({ text, commit }: { text: string; commit?: Commit }) {
                 −{deletions}
               </span>
             </summary>
-            <DiffLines lines={lines} patch={metadata.length > 0} />
+            {canApplyHunks ? hunkStarts.map((start, hunk) => {
+              return (
+                <div className="diff-hunk" key={start}>
+                  <div className="diff-hunk-header">
+                    <code>{lines[start]}</code>
+                    <button type="button" disabled={hunkAction.disabled} onClick={() => hunkAction.apply(hunk)}>
+                      {hunkAction.label}
+                    </button>
+                  </div>
+                  <DiffLines lines={lines.slice(start + 1, hunkStarts[hunk + 1])} patch />
+                </div>
+              );
+            }) : <DiffLines lines={lines} patch={metadata.length > 0} />}
             {metadata.length > 0 && (
               <details className="diff-patch-metadata">
                 <summary>Patch metadata</summary>
@@ -618,6 +643,7 @@ function App() {
 
   const [search, setSearch] = useState("");
   const [tagCommit, setTagCommit] = useState<string | null>(null);
+  const [renameBranch, setRenameBranch] = useState<string | null>(null);
   const [branchCommit, setBranchCommit] = useState<string | null>(null);
   const [appliedPicks, setAppliedPicks] = useState<{ root: string; head: string | null; picks: Commit[] } | null>(null);
   const [cherryPick, setCherryPick] = useState<Commit | null>(null);
@@ -1014,6 +1040,34 @@ function App() {
             <FileDiff size={14} aria-hidden="true" />
           )}
           {title} <span>{items.length}</span>
+          {!conflicting && (
+            <button
+              type="button"
+              className="stage-all-action"
+              disabled={busy || !items.length}
+              onClick={() => void update(
+                () => repository<Snapshot>(root, { kind: inIndex ? "unstage_all" : "stage_all" }),
+                (next) => {
+                  setSelection((current) => {
+                    if (current?.kind !== "diff" || current.staged !== inIndex) return current;
+                    const change = next.changes.find(({ path }) => path === current.path);
+                    if (!change) return null;
+                    if (inIndex && change.worktree !== " ") {
+                      return { ...current, staged: false, untracked: change.worktree === "?" };
+                    }
+                    if (!inIndex && change.worktree === " " && change.index !== " ") {
+                      return { ...current, staged: true, untracked: false };
+                    }
+                    return current;
+                  });
+                  setNotice(inIndex ? "Staged files unstaged." : "Unstaged files staged.");
+                },
+              )}
+            >
+              {inIndex ? <Minus size={12} aria-hidden="true" /> : <Plus size={12} aria-hidden="true" />}
+              {inIndex ? "Unstage all" : "Stage all"}
+            </button>
+          )}
         </h2>
         {!items.length && (
           <p className="group-empty">No {title.toLowerCase()} files</p>
@@ -1304,9 +1358,17 @@ function App() {
               busy={busy}
               branches={repo.branches.map(({ name }) => name)}
               currentBranch={repo.branch}
+              remotes={repo.remotes}
+              canPush={!!repo.head && repo.branch !== "Detached HEAD"}
+              hasUpstream={repo.has_upstream}
               tagCommit={tagCommit}
               branchCommit={branchCommit}
-              onBranchCommitClose={() => { setBranchCommit(null); setTagCommit(null); }}
+              renameBranch={renameBranch}
+              onPromptClose={() => {
+                setBranchCommit(null);
+                setTagCommit(null);
+                setRenameBranch(null);
+              }}
               originUrl={repo.origin_url}
               ahead={repo.ahead}
               behind={repo.behind}
@@ -1327,7 +1389,9 @@ function App() {
                     fetch: "Fetch completed.",
                     pull: "Pull completed.",
                     push: "Push completed.",
+                    publish_branch: "Branch published and upstream set.",
                     branch: "Branch created.",
+                    rename_branch: "Branch renamed.",
                     tag: "Tag created.",
                     merge: "Merge completed.",
                     stash: "Changes stashed.",
@@ -1469,6 +1533,7 @@ function App() {
                 return approved ? repository<Snapshot>(root, { kind: "delete_tag", name }) : null;
               }, () => setNotice(`Deleted local tag ${name}.`));
             }}
+            onRenameBranch={setRenameBranch}
             onDeleteBranch={(branch) => {
               void update(async () => {
                 const approved = await confirm(
@@ -1829,6 +1894,20 @@ function App() {
                 key={JSON.stringify(selection)}
                 text={diff}
                 commit={selectedCommit}
+                hunkAction={selection?.kind === "diff" && !selection.untracked ? {
+                  label: selection.staged ? "Unstage hunk" : "Stage hunk",
+                  disabled: busy,
+                  apply: (hunk) => void update(
+                    () => repository<Snapshot>(root, {
+                      kind: "apply_hunk",
+                      path: selection.path,
+                      staged: selection.staged,
+                      expected_diff: diff,
+                      hunk,
+                    }),
+                    () => setNotice(selection.staged ? "Hunk unstaged." : "Hunk staged."),
+                  ),
+                } : undefined}
               />
             ) : (
               <p className="diff-empty">

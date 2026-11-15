@@ -9,6 +9,7 @@ import {
   Layers3,
   Monitor,
   Package,
+  Pencil,
   Search,
   Tag,
   Trash2,
@@ -67,6 +68,7 @@ export function RepositorySidebar({
   historyBranch,
   onRemoteBranch,
   onCheckoutBranch,
+  onRenameBranch,
   onDeleteBranch,
   onDeleteTag,
   busy,
@@ -86,6 +88,7 @@ export function RepositorySidebar({
   historyBranch: string | null;
   onRemoteBranch: (ref: Reference) => void;
   onDeleteTag: (tag: string) => void;
+  onRenameBranch: (branch: string) => void;
   onDeleteBranch: (branch: string) => void;
   onCheckoutBranch: (branch: string, remote?: string) => void;
   busy: boolean;
@@ -340,6 +343,23 @@ export function RepositorySidebar({
             {branch === menu.branch ? <Check size={15} aria-hidden="true" /> : <GitBranch size={15} aria-hidden="true" />}
             {branch === menu.branch ? "Already checked out" : "Checkout"}
           </button>
+          )}
+          {!menu.remote && !menu.tag && (
+            <button
+              type="button"
+              role="menuitem"
+              tabIndex={-1}
+              aria-disabled={busy}
+              onClick={() => {
+                if (busy) return;
+                menu.trigger.focus();
+                setMenu(null);
+                onRenameBranch(menu.branch);
+              }}
+            >
+              <Pencil size={15} aria-hidden="true" />
+              Rename branch
+            </button>
           )}
           {!menu.remote && (
             <button

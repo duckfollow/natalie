@@ -668,6 +668,13 @@ nav button[aria-pressed="true"] {
   background: var(--count-background);
   border-radius: 5px;
 }
+.stage-all-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 6px;
+  white-space: nowrap;
+}
 .change-group h2 svg,
 .file-name svg {
   flex: none;
@@ -854,6 +861,28 @@ nav button[aria-pressed="true"] {
 .diff-file .diff .hunk {
   padding-block: 4px;
   background: var(--active);
+}
+.diff-hunk > .diff {
+  padding-block: 0;
+}
+.diff-hunk-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  padding: 4px 14px;
+  background: var(--active);
+  color: var(--accent);
+}
+.diff-hunk-header code {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.diff-hunk-header button {
+  padding: 4px 8px;
+  color: var(--text);
+  font-size: 11px;
 }
 .diff-patch-metadata {
   border-top: 1px solid var(--line);

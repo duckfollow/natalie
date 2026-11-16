@@ -6,7 +6,9 @@ Natalie is a macOS Git client for reviewing diffs, staging changes, creating com
 
 ## Download
 
-Get the Apple Silicon DMG from [GitHub Releases](https://github.com/duckfollow/natalie/releases/latest). The build has no Developer ID signature or Apple notarization. Natalie uses Git at `/usr/bin/git`.
+Get the Apple Silicon DMG from [GitHub Releases](https://github.com/duckfollow/natalie/releases/latest). Open the DMG and drag Natalie into Applications. Natalie uses Git at `/usr/bin/git`.
+
+The build is signed ad hoc and has no Apple notarization. If macOS blocks the first launch and you trust the download from GitHub Releases, try opening Natalie, then use **System Settings → Privacy & Security → Open Anyway** if offered. See [Apple’s instructions](https://support.apple.com/en-us/102445).
 
 ## Using Natalie
 

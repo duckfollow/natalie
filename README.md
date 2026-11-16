@@ -22,3 +22,18 @@ Install Node.js and Rust on macOS, then run:
 npm install
 npm run dev
 ```
+
+## macOS signing
+
+Local builds use ad-hoc bundle signing (`bundle.macOS.signingIdentity: "-"`).
+Verify the packaged app before distributing it:
+
+```sh
+codesign --verify --deep --strict --verbose=2 src-tauri/target/release/bundle/macos/Natalie.app
+```
+
+Ad-hoc signing does not provide Developer ID trust or Apple notarization. For
+public distribution, override the local identity with `APPLE_SIGNING_IDENTITY`
+using a Developer ID Application certificate and configure notarization credentials
+as described in the [Tauri macOS signing guide](https://v2.tauri.app/distribute/sign/macos/).
+Do not modify the app bundle after signing.

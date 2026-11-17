@@ -58,6 +58,7 @@ const isConflict = ({ index, worktree }: Change) =>
 
 type Snapshot = {
   root: string;
+  repo_version: string;
   branch: string;
   head: string | null;
   changes: Change[];
@@ -77,6 +78,17 @@ type Snapshot = {
 type Selection =
   | { kind: "diff"; path: string; staged: boolean; untracked: boolean }
   | { kind: "show"; hash: string };
+
+function animateRefreshIcon(button: HTMLButtonElement | null) {
+  const icon = button?.querySelector("svg");
+  if (icon && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    icon.getAnimations().forEach((animation) => animation.cancel());
+    icon.animate(
+      [{ transform: "rotate(0deg)" }, { transform: "rotate(360deg)" }],
+      { duration: 450, easing: "ease-in-out" },
+    );
+  }
+}
 
 function repository<T>(root: string | null, action: object) {
   return invoke<T>("repository", { root, action });
@@ -202,7 +214,7 @@ function CommitGraphRow({
   );
 }
 
-function CommitActions({ children }: { children: React.ReactNode }) {
+function CommitActions({ children, inert }: { children: React.ReactNode; inert?: boolean }) {
   const menuRef = useRef<HTMLDetailsElement>(null);
   useEffect(() => {
     function dismissOutside(event: PointerEvent) {
@@ -215,9 +227,10 @@ function CommitActions({ children }: { children: React.ReactNode }) {
 
   return (
     <>
-      <div className="diff-commit-actions">{children}</div>
+      <div className="diff-commit-actions" inert={inert}>{children}</div>
       <details
         ref={menuRef}
+        inert={inert}
         className="diff-commit-menu"
         onKeyDown={(event) => {
           if (event.key !== "Escape" || !event.currentTarget.open) return;
@@ -842,8 +855,9 @@ function App() {
   }
 
   const [selection, setSelection] = useState<Selection | null>(null);
-  const [diff, setDiff] = useState("");
-  const [loadingDiff, setLoadingDiff] = useState(false);
+  const [loadedDiff, setLoadedDiff] = useState<{
+    repo: Snapshot; selection: Selection; text: string;
+  } | null>(null);
   const [conflictMenu, setConflictMenu] = useState<{ file: Change; x: number; y: number; trigger: HTMLButtonElement } | null>(null);
   const conflictMenuRef = useRef<HTMLDivElement>(null);
   const conflictFile = conflictMenu?.file;
@@ -872,6 +886,7 @@ function App() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const refreshButton = useRef<HTMLButtonElement>(null);
   const pending = useRef(false);
   const conflicts = repo?.changes.filter(isConflict) ?? [];
   const staged =
@@ -879,6 +894,42 @@ function App() {
     [];
   const unstaged = repo?.changes.filter((item) => !isConflict(item) && item.worktree !== " ") ?? [];
   const root = repo?.root ?? null;
+  useEffect(() => {
+    if (!root || !repo) return;
+    let active = true;
+    let checking = false;
+    const version = repo.repo_version;
+
+    async function checkForChanges() {
+      if (document.hidden || pending.current || checking) return;
+      checking = true;
+      try {
+        animateRefreshIcon(refreshButton.current);
+        const next = await repository<Snapshot | null>(root, {
+          kind: "refresh_if_changed",
+          repo_version: version,
+        });
+        if (active && next && !pending.current) {
+          setRepo((current) => current === repo ? next : current);
+        }
+      } catch {
+        // Keep the current view on transient errors. Manual refresh reports errors.
+      } finally {
+        checking = false;
+      }
+    }
+
+    const interval = window.setInterval(checkForChanges, 5000);
+    window.addEventListener("focus", checkForChanges);
+    document.addEventListener("visibilitychange", checkForChanges);
+    return () => {
+      active = false;
+      window.clearInterval(interval);
+      window.removeEventListener("focus", checkForChanges);
+      document.removeEventListener("visibilitychange", checkForChanges);
+    };
+  }, [root, repo]);
+
   const pendingPicks = staged.length && appliedPicks && appliedPicks.root === root && appliedPicks.head === repo?.head
     ? appliedPicks.picks
     : [];
@@ -964,10 +1015,16 @@ function App() {
     };
   }, [root, remoteHash]);
 
-  const selectedCommit =
-    selection?.kind === "show"
-      ? commits?.find(({ hash }) => hash === selection.hash)
-      : undefined;
+  const diffIsCurrent = loadedDiff?.repo === repo && loadedDiff?.selection === selection;
+  const showingPreviousCommit = selection?.kind === "show" && loadedDiff?.selection.kind === "show"
+    && loadedDiff.repo.root === root;
+  const displayedDiff = diffIsCurrent || showingPreviousCommit ? loadedDiff : null;
+  const diffSelection = displayedDiff?.selection ?? selection;
+  const diff = displayedDiff?.text ?? "";
+  const loadingDiff = Boolean(root && selection && !diffIsCurrent);
+  const selectedCommit = diffSelection?.kind === "show"
+    ? commits?.find(({ hash }) => hash === diffSelection.hash)
+    : undefined;
   useLayoutEffect(() => {
     if (view !== "history" || !historyTarget) return;
     const row = listPanel.current?.querySelector<HTMLButtonElement>(
@@ -1075,26 +1132,20 @@ function App() {
     : undefined;
 
   useEffect(() => {
-    setDiff("");
-    setLoadingDiff(Boolean(root && selection));
-    if (!root || !selection) return;
+    if (!repo || !selection) return;
     let current = true;
-    repository<string>(root, selection)
-      .then(
-        (result) => {
-          if (current) setDiff(result);
-        },
-        (failure) => {
-          if (current) setDiff(String(failure));
-        },
-      )
-      .finally(() => {
-        if (current) setLoadingDiff(false);
-      });
+    repository<string>(repo.root, selection).then(
+      (text) => {
+        if (current) setLoadedDiff({ repo, selection, text });
+      },
+      (failure) => {
+        if (current) setLoadedDiff({ repo, selection, text: String(failure) });
+      },
+    );
     return () => {
       current = false;
     };
-  }, [root, selection, repo]);
+  }, [selection, repo]);
 
   async function update(
     action: () => Promise<Snapshot | null>,
@@ -1123,6 +1174,7 @@ function App() {
 
   async function refreshRepository() {
     if (!root || pending.current) return;
+    animateRefreshIcon(refreshButton.current);
     setRefreshing(true);
     try {
       await update(() => repository<Snapshot>(null, { kind: "open", folder: root }));
@@ -1526,6 +1578,7 @@ function App() {
           </button>
           {root && (
             <button
+              ref={refreshButton}
               className="header-secondary header-refresh"
               title="Refresh repository"
               aria-label="Refresh repository"
@@ -2080,55 +2133,55 @@ function App() {
               }}
             />
           )}
-          <section className="diff-panel" aria-label="Diff" ref={diffPanel}>
+          <section className="diff-panel" aria-label="Diff" aria-busy={loadingDiff} ref={diffPanel}>
             <header>
-              {selection?.kind === "show" ? (
+              {diffSelection?.kind === "show" ? (
                 <GitCommitHorizontal size={16} aria-hidden="true" />
               ) : (
                 <FileDiff size={16} aria-hidden="true" />
               )}
               <strong>
-                {selection?.kind === "diff"
-                  ? selection.path
-                  : selection?.kind === "show"
-                    ? <code title={selection.hash}>{selection.hash.slice(0, 12)}</code>
+                {diffSelection?.kind === "diff"
+                  ? diffSelection.path
+                  : diffSelection?.kind === "show"
+                    ? <code title={diffSelection.hash}>{diffSelection.hash.slice(0, 12)}</code>
                     : "Diff"}
               </strong>
-              {selection?.kind === "diff" && (
+              {diffSelection?.kind === "diff" && (
                 <span className="diff-context">
-                  {selection.staged ? "Staged" : "Working tree"}
+                  {diffSelection.staged ? "Staged" : "Working tree"}
                 </span>
               )}
-              {selection?.kind === "show" && !loadingDiff && diff && (
-                <CommitActions key={selection.hash}>
-                  {commitCommands(repo, selection.hash, selectedCommit)}
+              {diffSelection?.kind === "show" && diff && (
+                <CommitActions key={diffSelection.hash} inert={loadingDiff}>
+                  {commitCommands(repo, diffSelection.hash, selectedCommit)}
                 </CommitActions>
               )}
             </header>
-            {loadingDiff ? (
+            {loadingDiff && !displayedDiff ? (
               <p className="diff-empty">
                 <LoaderCircle size={24} className="spin" aria-hidden="true" />{" "}
                 Loading diff…
               </p>
             ) : diff || imagePreview ? (
               <DiffFiles
-                key={JSON.stringify(selection)}
+                key={JSON.stringify(diffSelection)}
                 text={diff}
                 preview={imagePreview}
-                historyRoot={selection?.kind === "show" ? root ?? undefined : undefined}
+                historyRoot={diffSelection?.kind === "show" ? root ?? undefined : undefined}
                 commit={selectedCommit}
-                hunkAction={selection?.kind === "diff" && !selection.untracked ? {
-                  label: selection.staged ? "Unstage hunk" : "Stage hunk",
+                hunkAction={diffSelection?.kind === "diff" && !diffSelection.untracked ? {
+                  label: diffSelection.staged ? "Unstage hunk" : "Stage hunk",
                   disabled: busy,
                   apply: (hunk) => void update(
                     () => repository<Snapshot>(root, {
                       kind: "apply_hunk",
-                      path: selection.path,
-                      staged: selection.staged,
+                      path: diffSelection.path,
+                      staged: diffSelection.staged,
                       expected_diff: diff,
                       hunk,
                     }),
-                    () => setNotice(selection.staged ? "Hunk unstaged." : "Hunk staged."),
+                    () => setNotice(diffSelection.staged ? "Hunk unstaged." : "Hunk staged."),
                   ),
                 } : undefined}
               />
@@ -2139,7 +2192,7 @@ function App() {
                 ) : (
                   <FileDiff size={26} aria-hidden="true" />
                 )}
-                {selection
+                {diffSelection
                   ? "No textual diff available."
                   : view === "changes"
                     ? "Select a changed file to review its diff."

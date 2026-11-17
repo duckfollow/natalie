@@ -6,12 +6,13 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
+    hash::{DefaultHasher, Hash, Hasher},
     io::{Read, Write},
     path::Path,
     process::{Command, Output, Stdio},
 };
 
-#[derive(Serialize)]
+#[derive(Hash, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Change {
     path: String,
@@ -52,6 +53,7 @@ struct LocalBranch {
 #[derive(Serialize)]
 struct Snapshot {
     root: String,
+    repo_version: String,
     branch: String,
     head: Option<String>,
     changes: Vec<Change>,
@@ -269,14 +271,23 @@ fn working_changes(root: &Path) -> Result<Vec<Change>, String> {
         .collect()
 }
 
+fn repo_version(root: &Path, branch: Option<&str>, changes: &[Change]) -> Result<String, String> {
+    let refs = output(run(root, &["show-ref", "--head"])?, true)?;
+    let mut hash = DefaultHasher::new();
+    (branch, refs, changes).hash(&mut hash);
+    Ok(format!("{:016x}", hash.finish()))
+}
+
 fn snapshot(folder: &Path) -> Result<Snapshot, String> {
     let root = git(folder, &["rev-parse", "--show-toplevel"])?;
     let root = root.trim_end_matches('\n').to_owned();
     let path = Path::new(&root);
+    let branch = git(path, &["symbolic-ref", "--quiet", "HEAD"]).ok();
+    let changes = working_changes(path)?;
+    let repo_version = repo_version(path, branch.as_deref(), &changes)?;
     let head = git(path, &["rev-parse", "--verify", "HEAD"])
         .ok()
         .map(|hash| hash.trim_end().to_owned());
-    let branch = git(path, &["symbolic-ref", "--quiet", "HEAD"]).ok();
     let branch = branch.as_deref().and_then(|name| name.trim_end().strip_prefix("refs/heads/"));
     let (branches, incoming) = local_branches(path)?;
     let current_branch = branches.iter().find(|local| Some(local.reference.name.as_str()) == branch);
@@ -284,7 +295,6 @@ fn snapshot(folder: &Path) -> Result<Snapshot, String> {
     let has_upstream = current_branch.is_some_and(|local| !local.upstream.is_empty());
     let ahead = current_branch.and_then(|local| local.ahead);
     let behind = current_branch.and_then(|local| local.behind);
-    let changes = working_changes(path)?;
     let commits = if head.is_some() {
         branch_history(path, &branches, &incoming, 0, 100)?
     } else {
@@ -340,6 +350,7 @@ fn snapshot(folder: &Path) -> Result<Snapshot, String> {
     .success();
     Ok(Snapshot {
         root,
+        repo_version,
         branch,
         head,
         changes,
@@ -376,6 +387,9 @@ enum Action {
         url: String,
         parent: String,
         name: String,
+    },
+    RefreshIfChanged {
+        repo_version: String,
     },
     Diff {
         path: String,
@@ -497,6 +511,7 @@ struct ImagePreview {
 #[serde(untagged)]
 enum Response {
     Snapshot(Snapshot),
+    Unchanged(()),
     Text(String),
     ImagePreview(ImagePreview),
     History(Vec<Commit>),
@@ -760,6 +775,15 @@ fn perform(root: Option<String>, action: Action) -> Result<Response, String> {
     let root = Path::new(root);
     match action {
         Action::Open { .. } | Action::Clone { .. } => unreachable!(),
+        Action::RefreshIfChanged { repo_version: expected } => {
+            let branch = git(root, &["symbolic-ref", "--quiet", "HEAD"]).ok();
+            let changes = working_changes(root)?;
+            if repo_version(root, branch.as_deref(), &changes)? == expected {
+                Ok(Response::Unchanged(()))
+            } else {
+                snapshot(root).map(Response::Snapshot)
+            }
+        }
         Action::Diff {
             path,
             staged,
@@ -1151,6 +1175,50 @@ mod tests {
         git(folder, &["config", "commit.gpgsign", "false"]).unwrap();
         git(folder, &["config", "core.hooksPath", "/dev/null"]).unwrap();
         repository
+    }
+
+    #[test]
+    fn refresh_detects_external_edits_staging_commits_and_branch_switches() {
+        let repository = test_repository();
+        let folder = &repository.0;
+        let original = snapshot(folder).unwrap();
+        let refresh = |previous: &Snapshot| {
+            perform(
+                Some(previous.root.clone()),
+                Action::RefreshIfChanged { repo_version: previous.repo_version.clone() },
+            )
+            .unwrap()
+        };
+        assert!(matches!(refresh(&original), Response::Unchanged(())));
+        std::fs::write(folder.join("external.txt"), "external edit").unwrap();
+        let Response::Snapshot(edited) = refresh(&original) else {
+            panic!("Expected File Status refresh after creating a file");
+        };
+        assert_eq!(edited.changes[0].path, "external.txt");
+        assert_eq!(edited.changes[0].index, '?');
+
+        git(folder, &["add", "--", "external.txt"]).unwrap();
+        let Response::Snapshot(staged) = refresh(&edited) else {
+            panic!("Expected File Status refresh after staging");
+        };
+        assert_eq!(staged.changes[0].index, 'A');
+
+        git(folder, &["commit", "-m", "External commit"]).unwrap();
+        let Response::Snapshot(committed) = refresh(&staged) else {
+            panic!("Expected new history after an external commit");
+        };
+        assert_eq!(committed.commits[0].subject, "External commit");
+        assert!(committed.changes.is_empty());
+        assert!(matches!(refresh(&committed), Response::Unchanged(())));
+
+        git(folder, &["branch", "other"]).unwrap();
+        let before_switch = snapshot(folder).unwrap();
+        git(folder, &["switch", "other"]).unwrap();
+        let Response::Snapshot(switched) = refresh(&before_switch) else {
+            panic!("Expected refresh after an external branch switch");
+        };
+        assert_eq!(switched.branch, "other");
+        assert_eq!(switched.head, before_switch.head);
     }
 
     #[test]

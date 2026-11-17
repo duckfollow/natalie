@@ -97,6 +97,9 @@ button:disabled {
   opacity: 0.48;
   cursor: default;
 }
+.header-refresh[aria-disabled="true"] {
+  cursor: default;
+}
 button:hover:not(:disabled) {
   background: var(--active);
 }
@@ -407,6 +410,14 @@ nav span,
   color: var(--muted);
   font-size: 10px;
   font-weight: 500;
+}
+.commit-dot-incoming,
+.commit-edge-incoming {
+  opacity: 0.55;
+}
+main:has(.git-toolbar button[data-action="pull"]:hover) [data-incoming-for-pull="true"],
+main:has(.repo-navigation [data-pull-count]:hover) [data-branch-pull-preview="true"] {
+  opacity: 1;
 }
 .history button {
   display: flex;
@@ -770,6 +781,162 @@ nav button[aria-pressed="true"] {
   flex: 1;
   flex-direction: column;
   min-height: 0;
+}
+.diff-image-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 12px;
+  font-size: 12px;
+}
+.image-preview {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+  gap: 12px;
+  padding: 12px;
+}
+.image-version {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+.image-version figcaption,
+.image-viewer header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+}
+.image-version-label {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 3px 7px;
+}
+.image-version-label > span,
+.image-dimensions,
+.image-preview-status,
+.image-preview-placeholder {
+  color: var(--muted);
+  font-size: 12px;
+}
+.image-version .image-dimensions {
+  margin-inline-start: auto;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.image-preview-status {
+  padding: 12px;
+}
+.image-checkerboard,
+button.image-preview-canvas:hover:not(:disabled) {
+  background-color: var(--image-canvas-color, var(--surface));
+  background-image: conic-gradient(var(--panel) 25%, transparent 0 50%, var(--panel) 0 75%, transparent 0);
+  background-size: 20px 20px;
+}
+.image-preview-canvas,
+.image-preview-placeholder {
+  position: relative;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  min-height: 170px;
+  margin: 0;
+  padding: 16px;
+}
+.image-preview-canvas {
+  grid-template-columns: minmax(0, 1fr);
+  width: 100%;
+  border: 0;
+  border-radius: 0;
+  cursor: zoom-in;
+}
+button.image-preview-canvas:hover:not(:disabled) {
+  --image-canvas-color: var(--active);
+}
+.image-preview-canvas img {
+  display: block;
+  max-width: 100%;
+  max-height: 360px;
+  object-fit: contain;
+}
+.image-preview-placeholder p {
+  margin: 7px 0 0;
+}
+.image-expand-icon {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--panel);
+}
+.image-viewer {
+  width: min(1040px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  color: var(--text);
+  background: var(--panel);
+}
+.image-viewer::backdrop {
+  background: var(--backdrop);
+}
+.image-viewer-body {
+  display: flex;
+  flex-direction: column;
+  height: min(750px, calc(100dvh - 36px));
+}
+.image-viewer-controls {
+  display: flex;
+  gap: 4px;
+  margin-inline-start: auto;
+}
+.image-viewer header button {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 4px 8px;
+  white-space: nowrap;
+}
+.image-viewer-controls button[aria-pressed="true"] {
+  color: var(--accent);
+  background: var(--active);
+}
+.image-viewer-canvas {
+  display: grid;
+  grid-template: minmax(0, 1fr) / minmax(0, 1fr);
+  flex: 1;
+  min-height: 0;
+  place-items: center;
+  overflow: hidden;
+}
+.image-viewer-canvas img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+.image-viewer-canvas[data-actual-size="true"] {
+  place-items: start;
+  overflow: auto;
+}
+.image-viewer-canvas[data-actual-size="true"] img {
+  max-width: none;
+  max-height: none;
 }
 .diff-file-toolbar {
   display: flex;
@@ -1171,6 +1338,20 @@ nav button[aria-pressed="true"] {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.repo-branch-status,
+.repo-branch-status > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.repo-branch-status {
+  flex: none;
+  gap: 7px;
+  margin-inline-start: auto;
+  color: var(--muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
 }
 .repo-branch-folder summary svg {
   flex-shrink: 0;
@@ -1868,6 +2049,11 @@ nav button[aria-pressed="true"] {
 }
 .commit-title strong {
   min-width: 0;
+}
+.incoming-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
 }
 .commit-title .merge-badge {
   flex: none;

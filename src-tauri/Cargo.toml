@@ -1,12 +1,13 @@
 [package]
 name = "natalie"
-version = "0.1.7"
+version = "0.1.8"
 edition = "2021"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+base64 = "0.23"
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }

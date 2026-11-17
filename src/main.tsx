@@ -15,6 +15,9 @@ import {
   GitCommitHorizontal,
   GitPullRequestArrow,
   History,
+  Image as ImageIcon,
+  Maximize2,
+  X,
   Layers3,
   LoaderCircle,
   Minus,
@@ -30,7 +33,7 @@ import {
   List,
 } from "lucide-react";
 import type { CSSProperties } from "react";
-import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
@@ -39,6 +42,7 @@ import { layoutHistory, type Commit } from "./history-graph";
 import { splitDiff } from "./diff-model";
 import {
   RepositorySidebar,
+  type LocalBranch,
   type Reference,
   type WorkspaceView,
 } from "./RepositorySidebar";
@@ -58,7 +62,7 @@ type Snapshot = {
   head: string | null;
   changes: Change[];
   commits: Commit[];
-  branches: Reference[];
+  branches: LocalBranch[];
   tags: Reference[];
   remotes: string[];
   remote_branches: Reference[];
@@ -107,6 +111,10 @@ function CommitGraphRow({
   theme,
   compact,
   localOnly,
+  incoming = false,
+  incomingForPull = false,
+  incomingBranches = [],
+  pullPreviewBranch,
   isHead,
 }: {
   row: ReturnType<typeof layoutHistory>["rows"][number];
@@ -114,6 +122,10 @@ function CommitGraphRow({
   author: string;
   compact: boolean;
   localOnly: boolean;
+  incoming?: boolean;
+  incomingForPull?: boolean;
+  incomingBranches?: string[];
+  pullPreviewBranch?: string;
   isHead: boolean;
   theme: "light" | "dark";
 }) {
@@ -158,6 +170,9 @@ function CommitGraphRow({
               key={index}
               d={path}
               stroke={colors[edge.color % colors.length]}
+              className={edge.incoming ? "commit-edge-incoming" : undefined}
+              data-incoming-for-pull={edge.incomingForPull || undefined}
+              data-branch-pull-preview={pullPreviewBranch && edge.incomingBranches?.includes(pullPreviewBranch) ? true : undefined}
               opacity={compact ? 0.7 : undefined}
               strokeDasharray={edge.dashed ? "4 3" : undefined}
               strokeWidth={edge.merge && !compact ? 3 : 2}
@@ -166,12 +181,14 @@ function CommitGraphRow({
         })}
       </svg>
       <span
-        className={`commit-dot${row.isMerge ? " commit-dot-merge" : ""}`}
+        className={`commit-dot${row.isMerge ? " commit-dot-merge" : ""}${incoming ? " commit-dot-incoming" : ""}`}
+        data-incoming-for-pull={incomingForPull || undefined}
+        data-branch-pull-preview={pullPreviewBranch && incomingBranches.includes(pullPreviewBranch) ? true : undefined}
         style={{
           left: laneX(row.index, compact),
-          background: localOnly ? (compact ? "var(--surface)" : "var(--panel)") : nodeColor,
-          border: localOnly ? `2px solid ${nodeColor}` : undefined,
-          color: localOnly ? nodeColor : undefined,
+          background: (localOnly || incoming) ? (compact ? "var(--surface)" : "var(--panel)") : nodeColor,
+          border: localOnly || incoming ? `2px solid ${nodeColor}` : undefined,
+          color: localOnly || incoming ? nodeColor : undefined,
         }}
       >
         {isHead && (
@@ -316,7 +333,141 @@ function PatchMetadata({ lines }: { lines: string[] }) {
   );
 }
 
-function DiffFiles({ text, commit, hunkAction }: {
+const imageTypes: Readonly<Partial<Record<string, string>>> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+  avif: "image/avif",
+  bmp: "image/bmp",
+  ico: "image/x-icon",
+  svg: "image/svg+xml",
+};
+
+function imageType(path: string) {
+  const extension = path.match(/\.([a-z0-9]+)"?$/i)?.[1].toLowerCase();
+  return extension && Object.hasOwn(imageTypes, extension) ? imageTypes[extension] : undefined;
+}
+
+type ImageRequest =
+  | { kind: "image_preview"; path: string; staged: boolean }
+  | { kind: "commit_image_preview"; before: string; after: string };
+
+function ImageVersion({ data, mime, label, source }: {
+  data: string | null; mime: string; label: string; source?: string;
+}) {
+  const [failed, setFailed] = useState(false);
+  const [dimensions, setDimensions] = useState("");
+  const [expanded, setExpanded] = useState(false);
+  const [actualSize, setActualSize] = useState(false);
+  const dialog = useRef<HTMLDialogElement>(null);
+  const expandButton = useRef<HTMLButtonElement>(null);
+  const titleId = useId();
+  const src = data && !failed ? `data:${mime};base64,${data}` : undefined;
+
+  return (
+    <figure className="image-version">
+      <figcaption>
+        <span className="image-version-label">
+          <strong>{label}</strong>
+          {source && <span>{source}</span>}
+        </span>
+        {dimensions && !failed && <span className="image-dimensions">{dimensions}</span>}
+      </figcaption>
+      {src ? (
+        <button
+          className="image-preview-canvas image-checkerboard"
+          type="button"
+          ref={expandButton}
+          aria-label={`Enlarge ${label.toLowerCase()} image`}
+          title="Enlarge image"
+          onClick={() => {
+            setActualSize(false);
+            dialog.current?.showModal();
+            setExpanded(true);
+          }}
+        >
+          <img src={src} alt={`${label} version`} onError={() => setFailed(true)} onLoad={(event) => {
+            const { naturalWidth, naturalHeight } = event.currentTarget;
+            setDimensions(`${naturalWidth} × ${naturalHeight}`);
+          }} />
+          <span className="image-expand-icon" aria-hidden="true"><Maximize2 size={14} /></span>
+        </button>
+      ) : (
+        <div className="image-preview-placeholder">
+          <ImageIcon size={22} aria-hidden="true" />
+          <p>{failed ? "Image could not be displayed." : `No image ${label.toLowerCase()} this change.`}</p>
+        </div>
+      )}
+      <dialog
+        ref={dialog}
+        className="image-viewer"
+        aria-labelledby={titleId}
+        onClick={(event) => { if (event.target === event.currentTarget) event.currentTarget.close(); }}
+        onClose={() => {
+          setExpanded(false);
+          expandButton.current?.focus({ preventScroll: true });
+        }}
+      >
+        <div className="image-viewer-body">
+          <header>
+            <strong id={titleId}>{label} image</strong>
+            {dimensions && <span className="image-dimensions">{dimensions}</span>}
+            <div className="image-viewer-controls" role="group" aria-label="Image size">
+              <button type="button" aria-pressed={!actualSize} onClick={() => setActualSize(false)}>Fit</button>
+              <button type="button" aria-pressed={actualSize} onClick={() => setActualSize(true)}>Actual size</button>
+            </div>
+            <button type="button" aria-label="Close image viewer" onClick={() => dialog.current?.close()}>
+              <X size={16} aria-hidden="true" />
+            </button>
+          </header>
+          <div className="image-viewer-canvas image-checkerboard" data-actual-size={actualSize}>
+            {expanded && src && <img src={src} alt={`${label} version`} />}
+          </div>
+        </div>
+      </dialog>
+    </figure>
+  );
+}
+
+function ImagePreview({ root, request, mime }: {
+  root: string; request: ImageRequest; mime: string;
+}) {
+  const [images, setImages] = useState<{ before: string | null; after: string | null } | null>(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let active = true;
+    repository<{ before: string | null; after: string | null }>(root, request)
+      .then(
+        (preview) => { if (active) setImages(preview); },
+        (failure) => { if (active) setError(String(failure)); },
+      );
+    return () => { active = false; };
+  }, [root, request]);
+
+  if (error || !images) return <p className="image-preview-status" role="status">{error || "Loading image preview…"}</p>;
+  return (
+    <section className="image-preview" aria-label="Image preview">
+      <ImageVersion
+        data={images.before}
+        mime={mime}
+        label="Before"
+        source={request.kind === "image_preview" ? (request.staged ? "HEAD" : "Index") : undefined}
+      />
+      <ImageVersion
+        data={images.after}
+        mime={mime}
+        label="After"
+        source={request.kind === "image_preview" ? (request.staged ? "Index" : "Working tree") : undefined}
+      />
+    </section>
+  );
+}
+
+function DiffFiles({ text, commit, hunkAction, preview, historyRoot }: {
+  historyRoot?: string;
+  preview?: React.ReactNode;
   text: string;
   commit?: Commit;
   hunkAction?: { label: string; disabled: boolean; apply: (index: number) => void };
@@ -331,6 +482,7 @@ function DiffFiles({ text, commit, hunkAction }: {
     ? files[0].lines.flatMap((line, index) => line.startsWith("@@ ") ? [index] : [])
     : [];
   const [fileQuery, setFileQuery] = useState("");
+  const [historyImage, setHistoryImage] = useState<{ index: number; mime: string; request: ImageRequest } | null>(null);
   const filePicker = useRef<HTMLDialogElement>(null);
   const matchingFiles = files.map((file, index) => ({ ...file, index }))
     .filter(({ path }) => path.toLowerCase().includes(fileQuery.trim().toLowerCase()));
@@ -352,7 +504,7 @@ function DiffFiles({ text, commit, hunkAction }: {
     }),
     { additions: 0, deletions: 0 },
   );
-  if (!files.length && !commit) return <DiffLines lines={intro} />;
+  if (!files.length && !commit && !preview) return <DiffLines lines={intro} />;
   return (
     <div className="diff-files">
       {files.length > 0 && (
@@ -410,6 +562,7 @@ function DiffFiles({ text, commit, hunkAction }: {
         </dialog>
       )}
       <div className="diff-file-scroll">
+        {preview}
         {commit ? (
           <div className="diff-commit-card">
             <h2>{commit.subject || "Untitled commit"}</h2>
@@ -429,7 +582,7 @@ function DiffFiles({ text, commit, hunkAction }: {
         ) : (
           intro.some((line) => line.trim()) && <DiffLines lines={intro} />
         )}
-        {files.map(({ path, lines, metadata, additions, deletions }, index) => (
+        {files.map(({ path, lines, metadata, additions, deletions, imageBlobs }, index) => (
           <details
             className="diff-file"
             open={index === 0}
@@ -458,6 +611,25 @@ function DiffFiles({ text, commit, hunkAction }: {
                 −{deletions}
               </span>
             </summary>
+            {historyRoot && imageBlobs && imageType(path) && (
+              historyImage?.index === index ? (
+                <ImagePreview
+                  key={index}
+                  root={historyRoot}
+                  request={historyImage.request}
+                  mime={historyImage.mime}
+                />
+              ) : (
+                <button type="button" className="diff-image-button" onClick={() => {
+                  const mime = imageType(path);
+                  if (mime) setHistoryImage({
+                    index,
+                    mime,
+                    request: { kind: "commit_image_preview", before: imageBlobs[0], after: imageBlobs[1] },
+                  });
+                }}><ImageIcon size={14} aria-hidden="true" /> View image</button>
+              )
+            )}
             {canApplyHunks ? hunkStarts.map((start, hunk) => {
               return (
                 <div className="diff-hunk" key={start}>
@@ -699,6 +871,7 @@ function App() {
   }, [notice]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const pending = useRef(false);
   const conflicts = repo?.changes.filter(isConflict) ?? [];
   const staged =
@@ -713,6 +886,7 @@ function App() {
     if (appliedPicks && !pendingPicks.length) setAppliedPicks(null);
   }, [appliedPicks, pendingPicks.length]);
 
+  const [pullPreview, setPullPreview] = useState<{ root: string | null; branch: string } | null>(null);
   const [historyBranch, setHistoryBranch] = useState<string | null>(null);
   const [remoteHistory, setRemoteHistory] = useState<{
     root: string;
@@ -733,31 +907,45 @@ function App() {
   const older = olderHistory?.base === firstPage ? olderHistory : null;
   const commits = older?.commits ?? firstPage;
   const canLoadOlder = (firstPage?.length ?? 0) === 100 && !older?.done;
+  const [historyScroll, setHistoryScroll] = useState<{ hash: string } | null>(null);
   const historyEnd = useRef<HTMLDivElement>(null);
+  const historyTarget = selection?.kind === "show" && selection.hash === historyScroll?.hash
+    ? historyScroll
+    : null;
+  const jumpNeedsPage = view === "history" && historyTarget != null
+    && repo?.branches.some(({ hash }) => hash === historyTarget.hash)
+    && !commits?.some(({ hash }) => hash === historyTarget.hash);
 
   useEffect(() => {
     if (view === "changes" || !root || !firstPage || !commits?.length || !canLoadOlder || older?.error || older?.loading) return;
+    function loadPage(base: Commit[], loaded: Commit[], repositoryRoot: string) {
+      const anchor = loaded[loaded.length - 1].hash;
+      setOlderHistory({ base, commits: loaded, done: false, loading: true });
+      void repository<Commit[]>(repositoryRoot, {
+        kind: "older_history", hash: remoteHash ?? null, offset: loaded.length, anchor,
+      }).then(
+        (page) => setOlderHistory((current) => current?.base === base
+          ? { base, commits: [...loaded, ...page], done: page.length < 100, loading: false }
+          : current),
+        (failure) => setOlderHistory((current) => current?.base === base
+          ? { base, commits: loaded, done: false, loading: false, error: String(failure) }
+          : current),
+      );
+    }
+    if (jumpNeedsPage) {
+      loadPage(firstPage, commits, root);
+      return;
+    }
     const marker = historyEnd.current;
     if (!marker) return;
     const observer = new IntersectionObserver(([entry]) => {
       if (!entry.isIntersecting) return;
       observer.disconnect();
-      const anchor = commits[commits.length - 1].hash;
-      setOlderHistory({ base: firstPage, commits, done: false, loading: true });
-      void repository<Commit[]>(root, {
-        kind: "older_history", hash: remoteHash ?? null, offset: commits.length, anchor,
-      }).then(
-        (page) => setOlderHistory((current) => current?.base === firstPage
-          ? { base: firstPage, commits: [...commits, ...page], done: page.length < 100, loading: false }
-          : current),
-        (failure) => setOlderHistory((current) => current?.base === firstPage
-          ? { base: firstPage, commits, done: false, loading: false, error: String(failure) }
-          : current),
-      );
+      loadPage(firstPage, commits, root);
     }, { root: marker.parentElement, rootMargin: "0px 0px 160px 0px" });
     observer.observe(marker);
     return () => observer.disconnect();
-  }, [view, root, remoteHash, firstPage, commits, canLoadOlder, older]);
+  }, [view, root, remoteHash, firstPage, commits, canLoadOlder, older, jumpNeedsPage]);
 
 
   useEffect(() => {
@@ -780,17 +968,17 @@ function App() {
     selection?.kind === "show"
       ? commits?.find(({ hash }) => hash === selection.hash)
       : undefined;
-  const [historyScroll, setHistoryScroll] = useState<{ hash: string } | null>(null);
   useLayoutEffect(() => {
-    if (view !== "history" || !historyScroll) return;
-    const row = listPanel.current?.querySelector(
-      `[data-commit-hash="${CSS.escape(historyScroll.hash)}"]`,
+    if (view !== "history" || !historyTarget) return;
+    const row = listPanel.current?.querySelector<HTMLButtonElement>(
+      `[data-commit-hash="${CSS.escape(historyTarget.hash)}"]`,
     );
     if (row) {
       row.scrollIntoView({ block: "nearest", inline: "nearest" });
+      row.focus({ preventScroll: true });
       setHistoryScroll(null);
     }
-  }, [view, commits, historyScroll]);
+  }, [view, commits, historyTarget]);
 
   const [graphMenu, setGraphMenu] = useState<{ commit: Commit; x: number; y: number; trigger: HTMLButtonElement } | null>(null);
   const graphMenuRef = useRef<HTMLDivElement>(null);
@@ -846,6 +1034,9 @@ function App() {
       date: "",
       refs: "",
       local_only: true,
+      incoming: false,
+      incoming_for_pull: false,
+      incoming_branches: [],
     });
   }
   const graph = layoutHistory(graphCommits);
@@ -874,6 +1065,14 @@ function App() {
       setHistoryWidths((widths) => ({ ...widths, [root]: next }));
     } else setListWidth(next);
   }
+
+  const imageMime = selection?.kind === "diff" ? imageType(selection.path) : undefined;
+  const imageRequest = useMemo<ImageRequest | null>(() => selection?.kind === "diff"
+    ? { kind: "image_preview", path: selection.path, staged: selection.staged }
+    : null, [selection]);
+  const imagePreview = root && imageRequest && imageMime
+    ? <ImagePreview key={JSON.stringify([root, imageRequest])} root={root} request={imageRequest} mime={imageMime} />
+    : undefined;
 
   useEffect(() => {
     setDiff("");
@@ -919,6 +1118,16 @@ function App() {
     } finally {
       pending.current = false;
       setBusy(false);
+    }
+  }
+
+  async function refreshRepository() {
+    if (!root || pending.current) return;
+    setRefreshing(true);
+    try {
+      await update(() => repository<Snapshot>(null, { kind: "open", folder: root }));
+    } finally {
+      setRefreshing(false);
     }
   }
 
@@ -1309,10 +1518,10 @@ function App() {
               </button>
             ))}
           </div>
-          <button className="header-secondary" disabled={busy || gitStatus !== "ready"} onClick={() => showPicker("repositories")}>
+          <button className="header-secondary" disabled={(busy && !refreshing) || gitStatus !== "ready"} aria-disabled={refreshing} onClick={() => { if (!pending.current) showPicker("repositories"); }}>
             <FolderGit2 size={15} aria-hidden="true" /> Repositories
           </button>
-          <button className="header-secondary" disabled={busy || gitStatus !== "ready"} onClick={() => showPicker("clone")}>
+          <button className="header-secondary" disabled={(busy && !refreshing) || gitStatus !== "ready"} aria-disabled={refreshing} onClick={() => { if (!pending.current) showPicker("clone"); }}>
             <Download size={15} aria-hidden="true" /> Clone
           </button>
           {root && (
@@ -1320,12 +1529,8 @@ function App() {
               className="header-secondary header-refresh"
               title="Refresh repository"
               aria-label="Refresh repository"
-              disabled={busy}
-              onClick={() =>
-                void update(() =>
-                  repository<Snapshot>(null, { kind: "open", folder: root }),
-                )
-              }
+              aria-disabled={busy}
+              onClick={refreshRepository}
             >
               <RefreshCw size={15} aria-hidden="true" />
             </button>
@@ -1333,7 +1538,8 @@ function App() {
           <button
             className="primary"
             onClick={chooseRepository}
-            disabled={busy || gitStatus !== "ready"}
+            disabled={(busy && !refreshing) || gitStatus !== "ready"}
+            aria-disabled={refreshing}
           >
             <FolderOpen size={15} aria-hidden="true" /> Open repo
           </button>
@@ -1356,6 +1562,7 @@ function App() {
           <div id="workspace-git-actions">
             <GitToolbar
               busy={busy}
+              refreshing={refreshing}
               branches={repo.branches.map(({ name }) => name)}
               currentBranch={repo.branch}
               remotes={repo.remotes}
@@ -1548,7 +1755,9 @@ function App() {
                 setNotice(`Deleted local branch ${branch}.`);
               });
             }}
+            onPullPreview={(branch) => setPullPreview(branch ? { root, branch } : null)}
             onRemoteBranch={(ref) => {
+              setHistoryListVisible(true);
               setHistoryScroll({ hash: ref.hash });
               setHistoryBranch(ref.name);
               setView("history");
@@ -1563,6 +1772,7 @@ function App() {
               setSelection(null);
             }}
             onCommit={(hash) => {
+              setHistoryListVisible(true);
               setHistoryScroll({ hash });
               setHistoryBranch(null);
               setView("history");
@@ -1707,6 +1917,7 @@ function App() {
                       </button>
                     );
                   }
+                  const incomingLabel = commit.incoming ? "Incoming · " : "";
                   const pickOrder = pendingPicks.findIndex((pick) => pick.hash === commit.hash) + 1;
                   return (
                     <button
@@ -1722,8 +1933,8 @@ function App() {
                       data-pending-pick={pickOrder || undefined}
                       data-head={commit.hash === repo.head ? "true" : undefined}
                       aria-current={commit.hash === repo.head ? "true" : undefined}
-                      aria-label={graphOnly ? `${commit.subject || "Untitled commit"} · ${commit.hash.slice(0, 7)}` : undefined}
-                      title={graphOnly ? `${commit.hash === repo.head ? "HEAD · " : ""}${commit.subject || "Untitled commit"} · ${commit.hash.slice(0, 7)}` : undefined}
+                      aria-label={graphOnly ? `${incomingLabel}${commit.subject || "Untitled commit"} · ${commit.hash.slice(0, 7)}` : undefined}
+                      title={graphOnly ? `${commit.hash === repo.head ? "HEAD · " : ""}${incomingLabel}${commit.subject || "Untitled commit"} · ${commit.hash.slice(0, 7)}` : undefined}
                       aria-pressed={
                         selection?.kind === "show" &&
                         selection.hash === commit.hash
@@ -1743,6 +1954,10 @@ function App() {
                           width={graph.width}
                           compact={graphOnly}
                           localOnly={commit.local_only}
+                          incoming={commit.incoming}
+                          incomingForPull={commit.incoming_for_pull}
+                          incomingBranches={commit.incoming_branches}
+                          pullPreviewBranch={pullPreview?.root === root ? pullPreview?.branch : undefined}
                           isHead={commit.hash === repo.head}
                           author={commit.author}
                           theme={theme}
@@ -1759,6 +1974,12 @@ function App() {
                           <strong title={view === "search" ? commit.subject : undefined}>
                             {commit.subject || "Untitled commit"}
                           </strong>
+                          {commit.incoming && (
+                            <span className="merge-badge incoming-badge" title="Commit available from the tracked branch">
+                              <ArrowDownToLine size={11} aria-hidden="true" />
+                              Incoming
+                            </span>
+                          )}
                           {graph.rows[index].isMerge && (
                             <span
                               className="merge-badge"
@@ -1889,10 +2110,12 @@ function App() {
                 <LoaderCircle size={24} className="spin" aria-hidden="true" />{" "}
                 Loading diff…
               </p>
-            ) : diff ? (
+            ) : diff || imagePreview ? (
               <DiffFiles
                 key={JSON.stringify(selection)}
                 text={diff}
+                preview={imagePreview}
+                historyRoot={selection?.kind === "show" ? root ?? undefined : undefined}
                 commit={selectedCommit}
                 hunkAction={selection?.kind === "diff" && !selection.untracked ? {
                   label: selection.staged ? "Unstage hunk" : "Stage hunk",

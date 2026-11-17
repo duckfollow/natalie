@@ -22,9 +22,13 @@ export function splitDiff(text: string) {
         .replace(/\t$/, "")
         .replace(/^[ab]\//, "") ??
       patch[0].slice("diff --git ".length);
+    const imageBlobs = header
+      .find((line) => /^index [a-f0-9]{40,64}\.\.[a-f0-9]{40,64}(?: |$)/.test(line))
+      ?.split(" ")[1].split("..");
     const changes = hunk < 0 ? [] : patch.slice(hunk);
     return {
       path,
+      imageBlobs,
       metadata: hunk < 0 ? [] : header,
       lines: hunk < 0 ? patch : changes,
       additions: changes.filter((line) => line.startsWith("+")).length,

@@ -2,9 +2,11 @@
 
 mod updates;
 
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde::{Deserialize, Serialize};
 use std::{
-    io::Write,
+    collections::{HashMap, HashSet},
+    io::{Read, Write},
     path::Path,
     process::{Command, Output, Stdio},
 };
@@ -26,6 +28,9 @@ struct Commit {
     parents: Vec<String>,
     refs: String,
     local_only: bool,
+    incoming: bool,
+    incoming_for_pull: bool,
+    incoming_branches: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -35,13 +40,23 @@ struct Reference {
 }
 
 #[derive(Serialize)]
+struct LocalBranch {
+    #[serde(flatten)]
+    reference: Reference,
+    ahead: Option<usize>,
+    behind: Option<usize>,
+    #[serde(skip)]
+    upstream: String,
+}
+
+#[derive(Serialize)]
 struct Snapshot {
     root: String,
     branch: String,
     head: Option<String>,
     changes: Vec<Change>,
     commits: Vec<Commit>,
-    branches: Vec<Reference>,
+    branches: Vec<LocalBranch>,
     tags: Vec<Reference>,
     remotes: Vec<String>,
     remote_branches: Vec<Reference>,
@@ -93,9 +108,89 @@ fn git(root: &Path, args: &[&str]) -> Result<String, String> {
     output(run(root, args)?, false)
 }
 
+#[derive(Default)]
+struct IncomingCommits {
+    all: HashMap<String, Vec<String>>,
+    for_pull: HashSet<String>,
+}
+
+fn local_branches(path: &Path) -> Result<(Vec<LocalBranch>, IncomingCommits), String> {
+    let tracking = git(
+        path,
+        &[
+            "for-each-ref",
+            "--format=%(objectname)%09%(refname:strip=2)%09%(upstream)%09%(HEAD)",
+            "refs/heads",
+        ],
+    )?;
+    let mut branches = Vec::new();
+    let mut incoming = IncomingCommits::default();
+    for line in tracking.lines() {
+        let mut fields = line.split('\t');
+        let (Some(hash), Some(name), Some(upstream), Some(head)) =
+            (fields.next(), fields.next(), fields.next(), fields.next())
+        else {
+            continue;
+        };
+        let mut branch = LocalBranch {
+            reference: Reference { name: name.to_owned(), hash: hash.to_owned() },
+            ahead: None,
+            behind: None,
+            upstream: upstream.to_owned(),
+        };
+        if !upstream.is_empty() {
+            let range = format!("{hash}...{upstream}");
+            // An upstream can be pruned while its tracking config is still present.
+            if let Ok(commits) = git(path, &["rev-list", "--left-right", &range, "--"]) {
+                let mut ahead = 0;
+                let mut behind = 0;
+                for commit in commits.lines() {
+                    if let Some(hash) = commit.strip_prefix('>') {
+                        behind += 1;
+                        if upstream.starts_with("refs/remotes/") {
+                            incoming.all.entry(hash.to_owned()).or_default().push(name.to_owned());
+                        }
+                    } else {
+                        ahead += 1;
+                    }
+                }
+                if head == "*" && ahead == 0 && upstream.starts_with("refs/remotes/") {
+                    incoming.for_pull.extend(
+                        commits.lines().filter_map(|commit| commit.strip_prefix('>')).map(str::to_owned),
+                    );
+                }
+                branch.ahead = Some(ahead);
+                branch.behind = Some(behind);
+            }
+        }
+        branches.push(branch);
+    }
+    Ok((branches, incoming))
+}
+
+fn branch_history(
+    path: &Path,
+    branches: &[LocalBranch],
+    incoming: &IncomingCommits,
+    skip: usize,
+    limit: usize,
+) -> Result<Vec<Commit>, String> {
+    let mut upstreams: Vec<_> = branches
+        .iter()
+        .filter(|branch| branch.behind.unwrap_or(0) > 0 && branch.upstream.starts_with("refs/remotes/"))
+        .map(|branch| branch.upstream.as_str())
+        .collect();
+    upstreams.sort_unstable();
+    upstreams.dedup();
+    let mut revisions = vec!["--branches", "HEAD"];
+    revisions.extend(upstreams);
+    history(path, &revisions, incoming, skip, limit)
+}
+
 fn history(
     path: &Path,
     revisions: &[&str],
+    incoming: &IncomingCommits,
     skip: usize,
     limit: usize,
 ) -> Result<Vec<Commit>, String> {
@@ -130,6 +225,9 @@ fn history(
             parents: record[4].split_whitespace().map(str::to_owned).collect(),
             refs: record[5].to_owned(),
             local_only: local_hashes.contains(record[0]),
+            incoming: incoming.all.contains_key(record[0]),
+            incoming_for_pull: incoming.for_pull.contains(record[0]),
+            incoming_branches: incoming.all.get(record[0]).cloned().unwrap_or_default(),
         })
         .collect())
 }
@@ -178,26 +276,17 @@ fn snapshot(folder: &Path) -> Result<Snapshot, String> {
     let head = git(path, &["rev-parse", "--verify", "HEAD"])
         .ok()
         .map(|hash| hash.trim_end().to_owned());
-    let branch = git(path, &["symbolic-ref", "--quiet", "--short", "HEAD"])
-        .map(|name| name.trim_end().to_owned())
-        .unwrap_or_else(|_| "Detached HEAD".to_owned());
-    let has_upstream = head.is_some() && has_upstream(path, &branch)?;
-    // Compare with the configured upstream; unavailable for new or detached branches.
-    let divergence = git(
-        path,
-        &["rev-list", "--left-right", "--count", "HEAD...@{upstream}"],
-    )
-    .ok()
-    .and_then(|counts| {
-        let mut counts = counts.split_whitespace();
-        Some((
-            counts.next()?.parse::<usize>().ok()?,
-            counts.next()?.parse::<usize>().ok()?,
-        ))
-    });
+    let branch = git(path, &["symbolic-ref", "--quiet", "HEAD"]).ok();
+    let branch = branch.as_deref().and_then(|name| name.trim_end().strip_prefix("refs/heads/"));
+    let (branches, incoming) = local_branches(path)?;
+    let current_branch = branches.iter().find(|local| Some(local.reference.name.as_str()) == branch);
+    let branch = branch.unwrap_or("Detached HEAD").to_owned();
+    let has_upstream = current_branch.is_some_and(|local| !local.upstream.is_empty());
+    let ahead = current_branch.and_then(|local| local.ahead);
+    let behind = current_branch.and_then(|local| local.behind);
     let changes = working_changes(path)?;
     let commits = if head.is_some() {
-        history(path, &["--branches", "HEAD"], 0, 100)?
+        branch_history(path, &branches, &incoming, 0, 100)?
     } else {
         Vec::new()
     };
@@ -218,11 +307,6 @@ fn snapshot(folder: &Path) -> Result<Snapshot, String> {
             })
             .collect())
     };
-    let branches = references(&[
-        "for-each-ref",
-        "--format=%(objectname)%00%(refname:strip=2)",
-        "refs/heads",
-    ])?;
     let tags = references(&[
         "for-each-ref",
         "--format=%(objectname)%00%(refname:strip=2)",
@@ -269,8 +353,8 @@ fn snapshot(folder: &Path) -> Result<Snapshot, String> {
         submodules,
         cherry_picking,
         has_upstream,
-        ahead: divergence.map(|(ahead, _)| ahead),
-        behind: divergence.map(|(_, behind)| behind),
+        ahead,
+        behind,
     })
 }
 
@@ -297,6 +381,14 @@ enum Action {
         path: String,
         staged: bool,
         untracked: bool,
+    },
+    ImagePreview {
+        path: String,
+        staged: bool,
+    },
+    CommitImagePreview {
+        before: String,
+        after: String,
     },
     ResolveConflict {
         path: String,
@@ -396,10 +488,17 @@ enum Action {
 }
 
 #[derive(Serialize)]
+struct ImagePreview {
+    before: Option<String>,
+    after: Option<String>,
+}
+
+#[derive(Serialize)]
 #[serde(untagged)]
 enum Response {
     Snapshot(Snapshot),
     Text(String),
+    ImagePreview(ImagePreview),
     History(Vec<Commit>),
 }
 
@@ -478,6 +577,67 @@ fn discard_paths(root: &Path, paths: &[String]) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+const IMAGE_PREVIEW_LIMIT: u64 = 12 * 1024 * 1024;
+
+fn image_blob(root: &Path, revision: &str) -> Result<Option<String>, String> {
+    let Ok(object) = git(root, &["rev-parse", "--verify", "--end-of-options", revision]) else {
+        return Ok(None);
+    };
+    read_image_blob(root, object.trim())
+}
+
+fn read_image_blob(root: &Path, object: &str) -> Result<Option<String>, String> {
+    validate_commit_hash(object)?;
+    if object.bytes().all(|digit| digit == b'0') {
+        return Ok(None);
+    }
+    let size = git(root, &["cat-file", "-s", object])?;
+    let size: u64 = size.trim().parse().map_err(|_| "Could not read image size.")?;
+    if size > IMAGE_PREVIEW_LIMIT {
+        return Err("Images over 12 MB cannot be previewed.".into());
+    }
+    let blob = run(root, &["cat-file", "blob", object])?;
+    if !blob.status.success() {
+        return Ok(None);
+    }
+    Ok(Some(STANDARD.encode(blob.stdout)))
+}
+
+fn working_image(root: &Path, path: &Path) -> Result<Option<String>, String> {
+    let root = root.canonicalize().map_err(|error| error.to_string())?;
+    let file = match root.join(path).canonicalize() {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.to_string()),
+    };
+    if !file.starts_with(&root) || !file.is_file() {
+        return Err("Image preview requires a regular file inside the repository.".into());
+    }
+    let file = std::fs::File::open(file).map_err(|error| error.to_string())?;
+    let mut bytes = Vec::new();
+    file.take(IMAGE_PREVIEW_LIMIT + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    if bytes.len() as u64 > IMAGE_PREVIEW_LIMIT {
+        return Err("Images over 12 MB cannot be previewed.".into());
+    }
+    Ok(Some(STANDARD.encode(bytes)))
+}
+
+fn image_preview(root: &Path, path: &str, staged: bool) -> Result<ImagePreview, String> {
+    let relative = Path::new(path);
+    if path.is_empty() || !relative.components().all(|part| matches!(part, std::path::Component::Normal(_))) {
+        return Err("Invalid image path.".into());
+    }
+    let index = format!(":0:{path}");
+    let (before, after) = if staged {
+        (image_blob(root, &format!("HEAD:{path}"))?, image_blob(root, &index)?)
+    } else {
+        (image_blob(root, &index)?, working_image(root, relative)?)
+    };
+    Ok(ImagePreview { before, after })
 }
 
 fn file_diff(root: &Path, path: &str, staged: bool, untracked: bool) -> Result<String, String> {
@@ -607,6 +767,15 @@ fn perform(root: Option<String>, action: Action) -> Result<Response, String> {
         } => {
             file_diff(root, &path, staged, untracked).map(Response::Text)
         }
+        Action::ImagePreview { path, staged } => {
+            image_preview(root, &path, staged).map(Response::ImagePreview)
+        }
+        Action::CommitImagePreview { before, after } => {
+            Ok(Response::ImagePreview(ImagePreview {
+                before: read_image_blob(root, &before)?,
+                after: read_image_blob(root, &after)?,
+            }))
+        }
         Action::OlderHistory {
             hash,
             offset,
@@ -615,9 +784,12 @@ fn perform(root: Option<String>, action: Action) -> Result<Response, String> {
             let mut page = match hash.as_deref() {
                 Some(hash) => {
                     validate_commit_hash(hash)?;
-                    history(root, &[hash], offset.saturating_sub(1), 101)?
+                    history(root, &[hash], &Default::default(), offset.saturating_sub(1), 101)?
                 }
-                None => history(root, &["--branches", "HEAD"], offset.saturating_sub(1), 101)?,
+                None => {
+                    let (branches, incoming) = local_branches(root)?;
+                    branch_history(root, &branches, &incoming, offset.saturating_sub(1), 101)?
+                }
             };
             if page.first().map(|commit| commit.hash.as_str()) != Some(&anchor) {
                 return Err("History changed. Refresh the repository and try again.".into());
@@ -627,7 +799,7 @@ fn perform(root: Option<String>, action: Action) -> Result<Response, String> {
         }
         Action::History { hash } => {
             validate_commit_hash(&hash)?;
-            history(root, &[&hash], 0, 100).map(Response::History)
+            history(root, &[&hash], &Default::default(), 0, 100).map(Response::History)
         }
         Action::Show { hash } => {
             validate_commit_hash(&hash)?;
@@ -638,6 +810,7 @@ fn perform(root: Option<String>, action: Action) -> Result<Response, String> {
                     "--no-ext-diff",
                     "--no-textconv",
                     "--no-color",
+                    "--full-index",
                     "--format=fuller",
                     &hash,
                     "--",
@@ -978,6 +1151,115 @@ mod tests {
         git(folder, &["config", "commit.gpgsign", "false"]).unwrap();
         git(folder, &["config", "core.hooksPath", "/dev/null"]).unwrap();
         repository
+    }
+
+    #[test]
+    fn previews_image_versions_from_head_index_and_worktree() {
+        let repository = test_repository();
+        let folder = &repository.0;
+        let path = "image with spaces.png";
+        let file = folder.join(path);
+        std::fs::write(&file, b"original").unwrap();
+        let added = image_preview(folder, path, false).unwrap();
+        assert_eq!(added.before, None);
+        assert_eq!(added.after, Some(STANDARD.encode(b"original")));
+
+        git(folder, &["add", "--", path]).unwrap();
+        git(folder, &["commit", "-m", "Add image"]).unwrap();
+        std::fs::write(&file, b"staged").unwrap();
+        git(folder, &["add", "--", path]).unwrap();
+        std::fs::write(&file, b"working").unwrap();
+
+        let staged = image_preview(folder, path, true).unwrap();
+        assert_eq!(staged.before, Some(STANDARD.encode(b"original")));
+        assert_eq!(staged.after, Some(STANDARD.encode(b"staged")));
+        let working = image_preview(folder, path, false).unwrap();
+        assert_eq!(working.before, staged.after);
+        assert_eq!(working.after, Some(STANDARD.encode(b"working")));
+
+        let blob = git(folder, &["rev-parse", "HEAD:image with spaces.png"]).unwrap();
+        let response = perform(
+            Some(folder.to_string_lossy().into_owned()),
+            Action::CommitImagePreview {
+                before: "0".repeat(blob.trim().len()),
+                after: blob.trim().to_owned(),
+            },
+        )
+        .unwrap();
+        let Response::ImagePreview(committed) = response else {
+            panic!("Expected image preview");
+        };
+        assert_eq!(committed.before, None);
+        assert_eq!(committed.after, staged.before);
+
+        std::fs::remove_file(file).unwrap();
+        assert_eq!(image_preview(folder, path, false).unwrap().after, None);
+        assert!(image_preview(folder, "../outside.png", false).is_err());
+    }
+
+    #[test]
+    fn previews_fetched_upstream_commits_until_pulled() {
+        let remote = test_repository();
+        let local = test_repository();
+        let folder = &local.0;
+        let remote_path = remote.0.to_str().unwrap();
+        let commit = |path: &Path, subject| {
+            git(path, &["commit", "--allow-empty", "-m", subject]).unwrap();
+        };
+
+        commit(&remote.0, "Shared base");
+        git(folder, &["remote", "add", "origin", remote_path]).unwrap();
+        git(folder, &["fetch", "origin"]).unwrap();
+        git(folder, &["checkout", "-B", "main", "--track", "origin/main"]).unwrap();
+        commit(&remote.0, "First incoming");
+        commit(&remote.0, "Second incoming");
+        assert_eq!(snapshot(folder).unwrap().commits.len(), 1);
+
+        git(folder, &["fetch", "origin"]).unwrap();
+        let preview = snapshot(folder).unwrap();
+        assert_eq!(preview.behind, Some(2));
+        assert_eq!(preview.commits.iter().filter(|commit| commit.incoming_for_pull).count(), 2);
+        assert_eq!(
+            preview.head.as_deref(),
+            Some(preview.commits[2].hash.as_str())
+        );
+        assert_eq!(
+            preview
+                .commits
+                .iter()
+                .map(|commit| (commit.subject.as_str(), commit.incoming))
+                .collect::<Vec<_>>(),
+            [
+                ("Second incoming", true),
+                ("First incoming", true),
+                ("Shared base", false),
+            ]
+        );
+        let (branches, incoming) = local_branches(folder).unwrap();
+        assert!(branch_history(folder, &branches, &incoming, 1, 1).unwrap()[0].incoming);
+
+        git(folder, &["branch", "--track", "ahead", "origin/main"]).unwrap();
+        git(folder, &["checkout", "ahead"]).unwrap();
+        commit(folder, "Local change");
+        git(folder, &["checkout", "-b", "other", "--no-track"]).unwrap();
+        let other = snapshot(folder).unwrap();
+        assert_eq!(other.behind, None);
+        assert!(other.commits.iter().all(|commit| !commit.incoming_for_pull));
+        assert_eq!(
+            other.branches.iter().map(|branch| (
+                branch.reference.name.as_str(), branch.ahead, branch.behind
+            )).collect::<Vec<_>>(),
+            [("ahead", Some(1), Some(0)), ("main", Some(0), Some(2)), ("other", None, None)]
+        );
+        assert_eq!(
+            other.commits.iter().filter(|commit| commit.incoming).count(),
+            2
+        );
+        git(folder, &["checkout", "main"]).unwrap();
+        git(folder, &["pull", "--ff-only"]).unwrap();
+        let pulled = snapshot(folder).unwrap();
+        assert_eq!(pulled.behind, Some(0));
+        assert!(pulled.commits.iter().all(|commit| !commit.incoming));
     }
 
     #[test]
@@ -1477,7 +1759,7 @@ mod tests {
         assert!(!deleted
             .branches
             .iter()
-            .any(|branch| branch.name == "topic/example"));
+            .any(|branch| branch.reference.name == "topic/example"));
         assert_eq!(deleted.remote_branches[0].name, "origin/topic/example");
     }
 }

@@ -43,6 +43,7 @@ type Prompt = "Publish" | "Branch" | "Merge" | "Stash" | "Origin";
 
 export function GitToolbar({
   busy,
+  refreshing,
   branches,
   currentBranch,
   remotes,
@@ -60,6 +61,7 @@ export function GitToolbar({
   onAction,
 }: {
   busy: boolean;
+  refreshing: boolean;
   branches: string[];
   currentBranch: string;
   remotes: string[];
@@ -99,6 +101,7 @@ export function GitToolbar({
         {operations.map(({ label, icon: Icon }) => (
           <button
             key={label}
+            data-action={label === "Pull" ? "pull" : undefined}
             type="button"
             title={
               label === "Pull" ? "Pull using fast-forward only"
@@ -106,13 +109,15 @@ export function GitToolbar({
                 : label === "Push" && !hasUpstream ? (remotes.length ? "Publish branch" : "Add a remote to publish")
                 : label
             }
+            aria-disabled={refreshing}
             disabled={
-              busy ||
+              (busy && !refreshing) ||
               (label === "Push" && !canPush) ||
               (label === "Merge" && !mergeBranches.length) ||
               (label === "Stash" && !changes)
             }
             onClick={() => {
+              if (busy) return;
               switch (label) {
                 case "Commit":
                   onCommit();

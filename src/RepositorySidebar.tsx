@@ -1,4 +1,6 @@
 import {
+  ArrowDown,
+  ArrowUp,
   Check,
   ChevronRight,
   Cloud,
@@ -20,6 +22,7 @@ import { createPortal } from "react-dom";
 
 export type WorkspaceView = "changes" | "history" | "search";
 export type Reference = { name: string; hash: string };
+export type LocalBranch = Reference & { ahead: number | null; behind: number | null };
 
 function Section({
   label,
@@ -67,6 +70,7 @@ export function RepositorySidebar({
   remote_branches,
   historyBranch,
   onRemoteBranch,
+  onPullPreview,
   onCheckoutBranch,
   onRenameBranch,
   onDeleteBranch,
@@ -81,11 +85,12 @@ export function RepositorySidebar({
   collapsed: boolean;
   onExpand: () => void;
   branch: string;
-  branches: Reference[];
+  branches: LocalBranch[];
   tags: Reference[];
   remotes: string[];
   remote_branches: Reference[];
   historyBranch: string | null;
+  onPullPreview: (branch: string | null) => void;
   onRemoteBranch: (ref: Reference) => void;
   onDeleteTag: (tag: string) => void;
   onRenameBranch: (branch: string) => void;
@@ -152,37 +157,59 @@ export function RepositorySidebar({
     });
   }
 
-  const groups = new Map<string, Reference[]>();
+  const groups = new Map<string, LocalBranch[]>();
   for (const ref of branches) {
     const slash = ref.name.indexOf("/");
     const group = slash < 0 ? "" : ref.name.slice(0, slash);
     groups.set(group, [...(groups.get(group) ?? []), ref]);
   }
-  const refButton = (ref: Reference, label = ref.name, current = false, activate = () => onCommit(ref.hash), checkout?: { branch: string; remote?: string; tag?: boolean }) => (
-    <button
-      type="button"
-      key={ref.name}
-      className={`repo-reference${current ? " current-branch" : ""}`}
-      aria-label={ref.name}
-      title={ref.name}
-      aria-current={current ? "true" : undefined}
-      onClick={activate}
-      aria-haspopup={checkout ? "menu" : undefined}
-      onContextMenu={checkout ? (event: MouseEvent<HTMLButtonElement>) => {
-        event.preventDefault();
-        openCheckoutMenu(event.currentTarget, checkout.remote, checkout.branch, event.clientX, event.clientY, checkout.tag);
-      } : undefined}
-      onKeyDown={checkout ? (event) => {
-        if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
-        event.preventDefault();
-        const bounds = event.currentTarget.getBoundingClientRect();
-        openCheckoutMenu(event.currentTarget, checkout.remote, checkout.branch, bounds.left, bounds.bottom, checkout.tag);
-      } : undefined}
-    >
-      {checkout && !checkout.tag && !checkout.remote && <span className="checked-out-dot" aria-hidden="true" />}
-      <span className="repo-reference-name">{label}</span>
-    </button>
-  );
+  const refButton = (ref: Reference & Partial<LocalBranch>, label = ref.name, current = false, activate = () => onCommit(ref.hash), checkout?: { branch: string; remote?: string; tag?: boolean }) => {
+    const behind = ref.behind ?? 0;
+    const ahead = ref.ahead ?? 0;
+    const description = [
+      ref.name,
+      behind > 0 ? `Pull ${behind}` : "",
+      ahead > 0 ? `Push ${ahead}` : "",
+    ].filter(Boolean).join(" · ");
+    return (
+      <button
+        type="button"
+        key={ref.name}
+        className={`repo-reference${current ? " current-branch" : ""}`}
+        aria-label={description}
+        title={description}
+        aria-current={current ? "true" : undefined}
+        onClick={activate}
+        aria-haspopup={checkout ? "menu" : undefined}
+        onContextMenu={checkout ? (event: MouseEvent<HTMLButtonElement>) => {
+          event.preventDefault();
+          openCheckoutMenu(event.currentTarget, checkout.remote, checkout.branch, event.clientX, event.clientY, checkout.tag);
+        } : undefined}
+        onKeyDown={checkout ? (event) => {
+          if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
+          event.preventDefault();
+          const bounds = event.currentTarget.getBoundingClientRect();
+          openCheckoutMenu(event.currentTarget, checkout.remote, checkout.branch, bounds.left, bounds.bottom, checkout.tag);
+        } : undefined}
+      >
+        {checkout && !checkout.tag && !checkout.remote && <span className="checked-out-dot" aria-hidden="true" />}
+        <span className="repo-reference-name">{label}</span>
+        {(behind > 0 || ahead > 0) && (
+          <span className="repo-branch-status" aria-hidden="true">
+            {behind > 0 && <span
+              data-pull-count
+              title={`Pull ${behind}`}
+              onMouseEnter={() => onPullPreview(ref.name)}
+              onMouseLeave={() => onPullPreview(null)}
+            >
+              <ArrowDown size={11} />{behind}
+            </span>}
+            {ahead > 0 && <span title={`Push ${ahead}`}><ArrowUp size={11} />{ahead}</span>}
+          </span>
+        )}
+      </button>
+    );
+  };
   const remoteGroups = new Map<string, Reference[]>();
   const remoteNames = [...remotes].sort((a, b) => b.length - a.length);
   for (const ref of remote_branches) {

@@ -14,6 +14,7 @@ The build is signed ad hoc and has no Apple notarization. If macOS blocks the fi
 
 - Choose **Open repo** to open a local working tree. Natalie uses your repository’s Git configuration and commit hooks.
 - Open **History** to browse the commit graph, or use **Search** to find commits by subject, author, hash, or ref. Both views load more commits as you scroll.
+- Use **Fetch** to update remote branches. History uses dashed lines and an **Incoming** label for commits that a local branch can pull from its upstream, even when another branch is checked out.
 - Use **Repositories** to reopen a recent working tree or **Clone** to clone an HTTPS or SSH Git URL. Clone uses the credentials configured for Git and does not open a terminal credential prompt.
 
 ## Run from source

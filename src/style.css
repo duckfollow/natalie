@@ -673,6 +673,7 @@ nav button[aria-pressed="true"] {
   padding-top: 6px;
 }
 .change-group h2 {
+  display: flex;
   justify-content: flex-start;
   margin: 0;
   padding: 7px;
@@ -685,12 +686,16 @@ nav button[aria-pressed="true"] {
   background: var(--count-background);
   border-radius: 5px;
 }
+.change-group h2:has(.stage-all-action) > span {
+  margin-inline-start: 0;
+}
 .stage-all-action {
   display: inline-flex;
   align-items: center;
   gap: 4px;
   padding: 3px 6px;
   white-space: nowrap;
+  margin-inline-start: auto;
 }
 .change-group h2 svg,
 .file-name svg {
@@ -2201,20 +2206,66 @@ button.image-preview-canvas:hover:not(:disabled) {
 }
 
 .discard-toolbar {
+  display: grid;
+  gap: 7px;
+  margin: 8px 8px 4px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+.discard-toolbar-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  min-height: 20px;
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.discard-toolbar-status strong {
+  color: var(--text);
+}
+.discard-clear-selection {
+  padding: 2px 4px;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font-size: inherit;
+}
+.discard-toolbar-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  padding: 8px;
-  border-bottom: 1px solid var(--line);
 }
-.discard-toolbar button {
+.discard-toolbar-actions button {
   display: inline-flex;
+  flex: 1 0 auto;
   align-items: center;
+  justify-content: center;
   gap: 5px;
+  min-height: 29px;
+  padding: 4px 7px;
   font-size: 11px;
+  font-weight: 600;
 }
-.discard-toolbar button:not(:disabled) {
+.discard-toolbar-actions button svg {
+  flex: none;
+}
+.discard-toolbar-actions .discard-selected-button:not(:disabled) {
+  border-color: color-mix(in srgb, var(--error) 35%, var(--line));
+  background: var(--diff-removed-background);
   color: var(--error);
+}
+.discard-toolbar-actions .discard-all-button {
+  background: transparent;
+  color: var(--error);
+}
+.discard-toolbar-actions button:hover:not(:disabled) {
+  border-color: var(--error);
+  background: color-mix(in srgb, var(--error) 14%, var(--panel));
 }
 .discard-checkbox {
   flex: none;

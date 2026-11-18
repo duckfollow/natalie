@@ -24,6 +24,7 @@ import {
   Plus,
   RefreshCw,
   Undo2,
+  Trash2,
   Tag,
   Sun,
   Moon,
@@ -1943,13 +1944,38 @@ function App() {
             {view === "changes" ? (
               <>
                 {discardable.length > 0 && (
-                  <div className="discard-toolbar">
-                    <button type="button" disabled={busy || !selectedForDiscard.length} aria-busy={discarding?.mode === "selected"} onClick={() => discardFiles(selectedForDiscard, "selected")}>
-                      {discarding?.mode === "selected" ? <><LoaderCircle size={12} className="spin" aria-hidden="true" /> Discarding…</> : `Discard selected${selectedForDiscard.length ? ` (${selectedForDiscard.length})` : ""}`}
-                    </button>
-                    <button type="button" disabled={busy} aria-busy={discarding?.mode === "all"} onClick={() => discardFiles(discardable, "all")}>
-                      {discarding?.mode === "all" ? <><LoaderCircle size={12} className="spin" aria-hidden="true" /> Discarding…</> : "Discard all"}
-                    </button>
+                  <div className="discard-toolbar" role="group" aria-label="Discard changes">
+                    <div className="discard-toolbar-status">
+                      <span role="status">
+                        <strong>{selectedForDiscard.length}</strong> of {discardable.length} selected
+                      </span>
+                      {selectedForDiscard.length > 0 && (
+                        <button type="button" className="discard-clear-selection" disabled={busy}
+                          onClick={() => setDiscardSelection(new Set())}>
+                          Clear selection
+                        </button>
+                      )}
+                    </div>
+                    <div className="discard-toolbar-actions">
+                      <button type="button" className="discard-selected-button"
+                        disabled={busy || !selectedForDiscard.length}
+                        aria-busy={discarding?.mode === "selected"}
+                        onClick={() => discardFiles(selectedForDiscard, "selected")}>
+                        {discarding?.mode === "selected"
+                          ? <LoaderCircle size={13} className="spin" aria-hidden="true" />
+                          : <Undo2 size={13} aria-hidden="true" />}
+                        Discard selected
+                      </button>
+                      <button type="button" className="discard-all-button"
+                        disabled={busy}
+                        aria-busy={discarding?.mode === "all"}
+                        onClick={() => discardFiles(discardable, "all")}>
+                        {discarding?.mode === "all"
+                          ? <LoaderCircle size={13} className="spin" aria-hidden="true" />
+                          : <Trash2 size={13} aria-hidden="true" />}
+                        Discard all
+                      </button>
+                    </div>
                   </div>
                 )}
                 <div className="sidebar-scroll file-status-list">

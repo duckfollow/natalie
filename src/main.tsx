@@ -130,6 +130,7 @@ function CommitGraphRow({
   pullPreviewBranch,
   syncedHashes,
   pulling,
+  pushingHashes,
   isHead,
 }: {
   row: ReturnType<typeof layoutHistory>["rows"][number];
@@ -143,6 +144,7 @@ function CommitGraphRow({
   pullPreviewBranch?: string;
   syncedHashes?: ReadonlySet<string>;
   pulling?: boolean;
+  pushingHashes?: ReadonlySet<string>;
   isHead: boolean;
   theme: "light" | "dark";
 }) {
@@ -189,6 +191,7 @@ function CommitGraphRow({
               stroke={colors[edge.color % colors.length]}
               className={edge.incoming ? "commit-edge-incoming" : undefined}
               data-pulling={pulling && edge.incomingForPull ? true : undefined}
+              data-pushing={edge.dashed && edge.sourceHash && pushingHashes?.has(edge.sourceHash) ? true : undefined}
               data-syncing={!edge.dashed && edge.sourceHash && syncedHashes?.has(edge.sourceHash) ? true : undefined}
               data-incoming-for-pull={edge.incomingForPull || undefined}
               data-branch-pull-preview={pullPreviewBranch && edge.incomingBranches?.includes(pullPreviewBranch) ? true : undefined}
@@ -899,6 +902,7 @@ function App() {
     return () => window.clearTimeout(timer);
   }, [graphSync]);
   const [busy, setBusy] = useState(false);
+  const [pushingHashes, setPushingHashes] = useState<Set<string>>();
   const [refreshing, setRefreshing] = useState(false);
   const refreshButton = useRef<HTMLButtonElement>(null);
   const pending = useRef(false);
@@ -1220,9 +1224,20 @@ function App() {
     stagedCommit?: Commit,
   ) {
     const isPull = "kind" in action && action.kind === "pull";
+    const isPush = "kind" in action && (action.kind === "push" || action.kind === "publish_branch");
     void update(
       async () => {
         if (isPull) setPullingRoot(root);
+        if (isPush && repo?.head) {
+          const reachable = new Set([repo.head]);
+          const outgoing = new Set<string>();
+          for (const commit of commits ?? []) {
+            if (!reachable.has(commit.hash)) continue;
+            if (commit.local_only) outgoing.add(commit.hash);
+            for (const parent of commit.parents) reachable.add(parent);
+          }
+          setPushingHashes(outgoing);
+        }
         try {
           return await repository<Snapshot>(root, action);
         } catch (failure) {
@@ -1242,6 +1257,7 @@ function App() {
           throw failure;
         } finally {
           if (isPull) setPullingRoot(null);
+          if (isPush) setPushingHashes(undefined);
         }
       },
       (next) => {
@@ -2092,6 +2108,7 @@ function App() {
                           incomingBranches={commit.incoming_branches}
                           pullPreviewBranch={pullPreview?.root === root ? pullPreview?.branch : undefined}
                           pulling={pullingRoot === repo.root}
+                          pushingHashes={pushingHashes}
                           syncedHashes={graphSync?.root === repo.root ? graphSync.hashes : undefined}
                           isHead={commit.hash === repo.head}
                           author={commit.author}

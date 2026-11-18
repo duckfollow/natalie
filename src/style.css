@@ -2606,6 +2606,9 @@ button.image-preview-canvas:hover:not(:disabled) {
 
 
 @media (prefers-reduced-motion: no-preference) {
+  .commit-graph path[data-pushing] {
+    animation: commit-edge-pull 550ms linear infinite reverse;
+  }
   .commit-graph path[data-pulling] {
     animation: commit-edge-pull 550ms linear infinite;
   }

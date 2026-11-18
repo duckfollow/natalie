@@ -1,3 +1,4 @@
+import { RepositoryInfo } from "./RepositoryInfo";
 import {
   ArrowDown,
   ArrowUp,
@@ -224,108 +225,111 @@ export function RepositorySidebar({
       aria-label="Repository navigation"
       tabIndex={0}
     >
-      <div className="repo-nav-section">
-        <h2>
-          <Monitor size={15} /> Workspace
-        </h2>
-        <div className="repo-nav-items" role="group" aria-label="Workspace">
-          <button
-            aria-pressed={view === "changes"}
-            aria-label="File status"
-            title="File status"
-            onClick={() => onView("changes")}
-          >
-            <FileDiff size={14} aria-hidden="true" /> <span>File status</span>
-          </button>
-          <button
-            aria-pressed={view === "history"}
-            aria-label="History"
-            title="History"
-            onClick={() => onView("history")}
-          >
-            <History size={14} aria-hidden="true" /> <span>History</span>
-          </button>
-          <button
-            aria-pressed={view === "search"}
-            aria-label="Search"
-            title="Search"
-            onClick={() => onView("search")}
-          >
-            <Search size={14} aria-hidden="true" /> <span>Search</span>
-          </button>
-        </div>
-      </div>
-      <Section onExpand={expandSection} label="Branches" icon={<GitBranch size={15} />} open>
-        {!branches.length && <small>No branches yet</small>}
-        {(groups.get("") ?? []).map((ref) =>
-          refButton(ref, ref.name, ref.name === branch, undefined, { branch: ref.name }),
-        )}
-        {[...groups]
-          .filter(([group]) => group)
-          .map(([group, refs]) => (
-            <details
-              className="repo-branch-folder"
-              key={group}
-              open={refs.some((ref) => ref.name === branch)}
+      <div className="repo-navigation-scroll">
+        <div className="repo-nav-section">
+          <h2>
+            <Monitor size={15} /> Workspace
+          </h2>
+          <div className="repo-nav-items" role="group" aria-label="Workspace">
+            <button
+              aria-pressed={view === "changes"}
+              aria-label="File status"
+              title="File status"
+              onClick={() => onView("changes")}
             >
-              <summary title={group}>
-                <ChevronRight size={12} />
-                <Folder size={14} />
-                <span className="repo-reference-name">{group}</span>
-              </summary>
-              {refs.map((ref) =>
-                refButton(
-                  ref,
-                  ref.name.slice(group.length + 1),
-                  ref.name === branch,
-                  undefined,
-                  { branch: ref.name },
-                ),
-              )}
-            </details>
-          ))}
-      </Section>
-      <Section onExpand={expandSection} label="Tags" icon={<Tag size={15} />}>
-        {tags.length ? (
-          tags.map((ref) => refButton(ref, ref.name, false, undefined, { branch: ref.name, tag: true }))
-        ) : (
-          <small>No tags</small>
-        )}
-      </Section>
-      <Section onExpand={expandSection} label="Remotes" icon={<Cloud size={15} />}>
-        {remotes.length ? (
-          remotes.map((name) => (
-            <details className="repo-branch-folder" key={name}>
-              <summary>
-                <ChevronRight size={12} />
-                <Cloud size={14} />
-                <span className="repo-reference-name">{name}</span>
-              </summary>
-              {(remoteGroups.get(name) ?? []).map((ref) => {
-                const label = ref.name.slice(name.length + 1);
-                return refButton(ref, label, ref.name === historyBranch, () => onRemoteBranch(ref), { remote: name, branch: label });
-              })}
-              {!remoteGroups.has(name) && <small>No fetched branches</small>}
-            </details>
-          ))
-        ) : (
-          <small>No remotes</small>
-        )}
-      </Section>
-      <Section onExpand={expandSection} label="Stashes" icon={<Layers3 size={15} />}>
-        {stashes.length ? (
-          stashes.map((ref) => refButton(ref))
-        ) : (
-          <small>No stashes</small>
-        )}
-      </Section>
-      <Section onExpand={expandSection} label="Submodules" icon={<Package size={15} />}>
-        {submodules.length ? (
-          submodules.map((name) => <span key={name}>{name}</span>)
-        ) : (
-          <small>No submodules</small>
-        )}
-      </Section>
+              <FileDiff size={14} aria-hidden="true" /> <span>File status</span>
+            </button>
+            <button
+              aria-pressed={view === "history"}
+              aria-label="History"
+              title="History"
+              onClick={() => onView("history")}
+            >
+              <History size={14} aria-hidden="true" /> <span>History</span>
+            </button>
+            <button
+              aria-pressed={view === "search"}
+              aria-label="Search"
+              title="Search"
+              onClick={() => onView("search")}
+            >
+              <Search size={14} aria-hidden="true" /> <span>Search</span>
+            </button>
+          </div>
+        </div>
+        <Section onExpand={expandSection} label="Branches" icon={<GitBranch size={15} />} open>
+          {!branches.length && <small>No branches yet</small>}
+          {(groups.get("") ?? []).map((ref) =>
+            refButton(ref, ref.name, ref.name === branch, undefined, { branch: ref.name }),
+          )}
+          {[...groups]
+            .filter(([group]) => group)
+            .map(([group, refs]) => (
+              <details
+                className="repo-branch-folder"
+                key={group}
+                open={refs.some((ref) => ref.name === branch)}
+              >
+                <summary title={group}>
+                  <ChevronRight size={12} />
+                  <Folder size={14} />
+                  <span className="repo-reference-name">{group}</span>
+                </summary>
+                {refs.map((ref) =>
+                  refButton(
+                    ref,
+                    ref.name.slice(group.length + 1),
+                    ref.name === branch,
+                    undefined,
+                    { branch: ref.name },
+                  ),
+                )}
+              </details>
+            ))}
+        </Section>
+        <Section onExpand={expandSection} label="Tags" icon={<Tag size={15} />}>
+          {tags.length ? (
+            tags.map((ref) => refButton(ref, ref.name, false, undefined, { branch: ref.name, tag: true }))
+          ) : (
+            <small>No tags</small>
+          )}
+        </Section>
+        <Section onExpand={expandSection} label="Remotes" icon={<Cloud size={15} />}>
+          {remotes.length ? (
+            remotes.map((name) => (
+              <details className="repo-branch-folder" key={name}>
+                <summary>
+                  <ChevronRight size={12} />
+                  <Cloud size={14} />
+                  <span className="repo-reference-name">{name}</span>
+                </summary>
+                {(remoteGroups.get(name) ?? []).map((ref) => {
+                  const label = ref.name.slice(name.length + 1);
+                  return refButton(ref, label, ref.name === historyBranch, () => onRemoteBranch(ref), { remote: name, branch: label });
+                })}
+                {!remoteGroups.has(name) && <small>No fetched branches</small>}
+              </details>
+            ))
+          ) : (
+            <small>No remotes</small>
+          )}
+        </Section>
+        <Section onExpand={expandSection} label="Stashes" icon={<Layers3 size={15} />}>
+          {stashes.length ? (
+            stashes.map((ref) => refButton(ref))
+          ) : (
+            <small>No stashes</small>
+          )}
+        </Section>
+        <Section onExpand={expandSection} label="Submodules" icon={<Package size={15} />}>
+          {submodules.length ? (
+            submodules.map((name) => <span key={name}>{name}</span>)
+          ) : (
+            <small>No submodules</small>
+          )}
+        </Section>
+      </div>
+      <RepositoryInfo />
       {menu && createPortal(
         <div
           ref={menuContainer}

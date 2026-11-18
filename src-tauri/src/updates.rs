@@ -116,6 +116,17 @@ pub async fn open_related_project(project: String) -> Result<(), String> {
         .await
         .map_err(|_| "Could not open the project in your browser.".into())
 }
+#[tauri::command]
+pub async fn open_token_setup(provider: String) -> Result<(), String> {
+    let url = match provider.as_str() {
+        "github" => "https://github.com/settings/personal-access-tokens",
+        "bitbucket" => "https://id.atlassian.com/manage-profile/security/api-tokens",
+        _ => return Err("Unknown Git provider.".into()),
+    };
+    open_browser(url.into())
+        .await
+        .map_err(|_| "Could not open token settings in your browser.".into())
+}
 async fn open_browser(url: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         #[cfg(target_os = "macos")]

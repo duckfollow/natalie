@@ -3,8 +3,8 @@ import {
   ArrowDownToLine,
   TriangleAlert,
   ChevronRight,
+  Ellipsis,
   CircleCheck,
-  Crown,
   Cloud,
   FileDiff,
   Download,
@@ -12,6 +12,7 @@ import {
   FileText,
   FolderOpen,
   GitBranch,
+  GitMerge,
   GitCommitHorizontal,
   GitPullRequestArrow,
   History,
@@ -31,7 +32,8 @@ import {
   Monitor,
   PanelLeft,
   PanelRightOpen,
-  List,
+  PanelLeftClose,
+  PanelLeftOpen,
 } from "lucide-react";
 import type { CSSProperties } from "react";
 import { Fragment, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -39,6 +41,7 @@ import { createPortal } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
 import { open, confirm } from "@tauri-apps/plugin-dialog";
+import { CommitGraphRow, lanePadding, laneX } from "./CommitGraphRow";
 import { layoutHistory, type Commit } from "./history-graph";
 import { splitDiff } from "./diff-model";
 import {
@@ -72,10 +75,54 @@ type Snapshot = {
   stashes: Reference[];
   submodules: string[];
   cherry_picking: boolean;
+  rebasing: boolean;
   has_upstream: boolean;
   ahead: number | null;
   behind: number | null;
 };
+type RebasePreview = { upstream: string; upstream_ref: string; commits: string[] };
+
+function RebaseSequence({ preview, theme, commits }: {
+  preview: RebasePreview;
+  theme: "light" | "dark";
+  commits?: Commit[];
+}) {
+  const shown = preview.commits.slice(0, 8);
+  const remaining = preview.commits.length - shown.length;
+  const hashes = [preview.upstream, ...shown];
+  if (remaining) hashes.push("remaining");
+  const rows: Commit[] = hashes.map((hash, index) => ({
+    hash,
+    author: "",
+    date: "",
+    refs: "",
+    subject: hash === "remaining" ? `${remaining} more commits`
+      : index === 0 ? preview.upstream_ref
+      : commits?.find((commit) => commit.hash === hash)?.subject || "Replayed commit",
+    parents: index ? [hashes[index - 1]] : [],
+    local_only: index > 0,
+    incoming: false,
+    incoming_for_pull: false,
+    incoming_branches: [],
+  })).reverse();
+  const graph = layoutHistory(rows);
+  const replayed = new Set(hashes.slice(1));
+  return (
+    <ol className="rebase-sequence" aria-label="Projected commit graph, newest first">
+      {rows.map((commit, index) => (
+        <li key={commit.hash}>
+          <CommitGraphRow row={graph.rows[index]} width={graph.width} author="" theme={theme}
+            compact localOnly={commit.local_only} isHead={false} pushingHashes={replayed} />
+          <strong title={commit.subject}>{commit.subject}</strong>
+          {commit.hash !== "remaining" && (
+            <code title={commit.hash}>{commit.hash.slice(0, 7)}{commit.local_only ? "′" : ""}</code>
+          )}
+        </li>
+      ))}
+    </ol>
+  );
+}
+
 type Selection =
   | { kind: "diff"; path: string; staged: boolean; untracked: boolean }
   | { kind: "show"; hash: string };
@@ -95,135 +142,6 @@ function repository<T>(root: string | null, action: object) {
   return invoke<T>("repository", { root, action });
 }
 
-const laneColors = [
-  "#43c9df",
-  "#629fff",
-  "#ba82f2",
-  "#ee70bd",
-  "#ff887a",
-  "#f4c65e",
-  "#94cc73",
-];
-const lightLaneColors = [
-  "#137084",
-  "#315fb7",
-  "#7549a7",
-  "#a83b79",
-  "#a13c34",
-  "#775719",
-  "#3e702c",
-];
-const laneStep = 28;
-const lanePadding = 17;
-const laneX = (lane: number, compact = false) => lanePadding + lane * (compact ? 18 : laneStep);
-
-function CommitGraphRow({
-  row,
-  width,
-  author,
-  theme,
-  compact,
-  localOnly,
-  incoming = false,
-  incomingForPull = false,
-  incomingBranches = [],
-  pullPreviewBranch,
-  syncedHashes,
-  pulling,
-  pushingHashes,
-  isHead,
-}: {
-  row: ReturnType<typeof layoutHistory>["rows"][number];
-  width: number;
-  author: string;
-  compact: boolean;
-  localOnly: boolean;
-  incoming?: boolean;
-  incomingForPull?: boolean;
-  incomingBranches?: string[];
-  pullPreviewBranch?: string;
-  syncedHashes?: ReadonlySet<string>;
-  pulling?: boolean;
-  pushingHashes?: ReadonlySet<string>;
-  isHead: boolean;
-  theme: "light" | "dark";
-}) {
-  const colors = theme === "light" ? lightLaneColors : laneColors;
-  const nodeColor = colors[row.color % colors.length];
-  const halfRow = compact ? 16 : 38;
-  const graphWidth = laneX(width - 1, compact) + lanePadding;
-  const initials = author
-    .trim()
-    .split(/\s+/)
-    .slice(0, 2)
-    .map((word) => Array.from(word)[0] ?? "")
-    .join("")
-    .toLocaleUpperCase();
-
-  return (
-    <span
-      className="commit-graph"
-      aria-hidden="true"
-      style={{ width: graphWidth, height: halfRow * 2 }}
-    >
-      <svg width={graphWidth} height={halfRow * 2} fill="none" strokeLinejoin="round">
-        {row.edges.map((edge, index) => {
-          const from = laneX(edge.from, compact);
-          const to = laneX(edge.to, compact);
-          const start = edge.part === "top" ? 0 : halfRow;
-          const end = start + halfRow;
-          let path = `M ${from} ${start} V ${end}`;
-          if (from !== to) {
-            const bend = start + halfRow / 2;
-            const radius = compact ? 4 : 6;
-            const offset = radius * Math.sign(to - from);
-            path = [
-              `M ${from} ${start} V ${bend - radius}`,
-              `Q ${from} ${bend} ${from + offset} ${bend}`,
-              `H ${to - offset}`,
-              `Q ${to} ${bend} ${to} ${bend + radius} V ${end}`,
-            ].join(" ");
-          }
-          return (
-            <path
-              key={index}
-              d={path}
-              stroke={colors[edge.color % colors.length]}
-              className={edge.incoming ? "commit-edge-incoming" : undefined}
-              data-pulling={pulling && edge.incomingForPull ? true : undefined}
-              data-pushing={edge.dashed && edge.sourceHash && pushingHashes?.has(edge.sourceHash) ? true : undefined}
-              data-syncing={!edge.dashed && edge.sourceHash && syncedHashes?.has(edge.sourceHash) ? true : undefined}
-              data-incoming-for-pull={edge.incomingForPull || undefined}
-              data-branch-pull-preview={pullPreviewBranch && edge.incomingBranches?.includes(pullPreviewBranch) ? true : undefined}
-              opacity={compact ? 0.7 : undefined}
-              strokeDasharray={edge.dashed ? "4 3" : undefined}
-              strokeWidth={edge.merge && !compact ? 3 : 2}
-            />
-          );
-        })}
-      </svg>
-      <span
-        className={`commit-dot${row.isMerge ? " commit-dot-merge" : ""}${incoming ? " commit-dot-incoming" : ""}`}
-        data-incoming-for-pull={incomingForPull || undefined}
-        data-branch-pull-preview={pullPreviewBranch && incomingBranches.includes(pullPreviewBranch) ? true : undefined}
-        style={{
-          left: laneX(row.index, compact),
-          background: (localOnly || incoming) ? (compact ? "var(--surface)" : "var(--panel)") : nodeColor,
-          border: localOnly || incoming ? `2px solid ${nodeColor}` : undefined,
-          color: localOnly || incoming ? nodeColor : undefined,
-        }}
-      >
-        {isHead && (
-          <span className="commit-head-crown" aria-hidden="true">
-            <Crown size={compact ? 10 : 13} fill="currentColor" />
-          </span>
-        )}
-        {row.isMerge || compact ? null : initials}
-      </span>
-    </span>
-  );
-}
-
 function CommitActions({ children, inert }: { children: React.ReactNode; inert?: boolean }) {
   const menuRef = useRef<HTMLDetailsElement>(null);
   useEffect(() => {
@@ -236,35 +154,34 @@ function CommitActions({ children, inert }: { children: React.ReactNode; inert?:
   }, []);
 
   return (
-    <>
-      <div className="diff-commit-actions" inert={inert}>{children}</div>
-      <details
-        ref={menuRef}
-        inert={inert}
-        className="diff-commit-menu"
-        onKeyDown={(event) => {
-          if (event.key !== "Escape" || !event.currentTarget.open) return;
-          event.stopPropagation();
-          event.currentTarget.open = false;
-          event.currentTarget.querySelector("summary")?.focus();
+    <details
+      ref={menuRef}
+      inert={inert}
+      className="diff-commit-menu"
+      onKeyDown={(event) => {
+        if (event.key !== "Escape" || !event.currentTarget.open) return;
+        event.stopPropagation();
+        event.currentTarget.open = false;
+        event.currentTarget.querySelector("summary")?.focus();
+      }}
+    >
+      <summary title="Commit actions" aria-label="Commit actions">
+        <Ellipsis size={17} aria-hidden="true" />
+      </summary>
+      <div
+        className="diff-commit-menu-items"
+        onClick={(event) => {
+          if (!event.nativeEvent.composedPath().some(
+            (element) => element instanceof HTMLButtonElement && !element.disabled,
+          )) return;
+          const menu = event.currentTarget.parentElement as HTMLDetailsElement;
+          menu.querySelector("summary")?.focus();
+          menu.open = false;
         }}
       >
-        <summary>Commit actions <ChevronRight size={13} aria-hidden="true" /></summary>
-        <div
-          className="diff-commit-menu-items"
-          onClick={(event) => {
-            if (!event.nativeEvent.composedPath().some(
-              (element) => element instanceof HTMLButtonElement && !element.disabled,
-            )) return;
-            const menu = event.currentTarget.parentElement as HTMLDetailsElement;
-            menu.querySelector("summary")?.focus();
-            menu.open = false;
-          }}
-        >
-          {children}
-        </div>
-      </details>
-    </>
+        {children}
+      </div>
+    </details>
   );
 }
 
@@ -887,12 +804,16 @@ function App() {
   const [discardSelection, setDiscardSelection] = useState<Set<string>>(() => new Set());
   const [message, setMessage] = useState("");
   const [notice, setNotice] = useState("");
+  const [resetWarning, setResetWarning] = useState("");
 
   useEffect(() => {
-    if (!notice) return;
-    const timer = window.setTimeout(() => setNotice(""), 4200);
+    if (!notice && !resetWarning) return;
+    const timer = window.setTimeout(() => {
+      setNotice("");
+      setResetWarning("");
+    }, 4200);
     return () => window.clearTimeout(timer);
-  }, [notice]);
+  }, [notice, resetWarning]);
   const [error, setError] = useState("");
   const [pullingRoot, setPullingRoot] = useState<string | null>(null);
   const [graphSync, setGraphSync] = useState<{ root: string; hashes: Set<string> } | null>(null);
@@ -912,6 +833,26 @@ function App() {
     [];
   const unstaged = repo?.changes.filter((item) => !isConflict(item) && item.worktree !== " ") ?? [];
   const root = repo?.root ?? null;
+  const [previewingRebase, setPreviewingRebase] = useState(false);
+  const [hoverRebase, setHoverRebase] = useState<{ repo: Snapshot; preview: RebasePreview } | null>(null);
+  const [rebaseReview, setRebaseReview] = useState<{ repo: Snapshot; preview: RebasePreview } | null>(null);
+  const rebaseDialog = useRef<HTMLDialogElement>(null);
+  const rebaseGraph = previewingRebase && hoverRebase?.repo === repo ? hoverRebase?.preview : undefined;
+  const rebaseHashes = useMemo(() => new Set(rebaseGraph?.commits), [rebaseGraph]);
+
+  useEffect(() => {
+    if (!previewingRebase || !repo || hoverRebase?.repo === repo) return;
+    let active = true;
+    void repository<RebasePreview>(repo.root, { kind: "rebase_preview" }).then((preview) => {
+      if (active) setHoverRebase({ repo, preview });
+    }).catch(() => {});
+    return () => { active = false; };
+  }, [previewingRebase, repo, hoverRebase]);
+
+  useEffect(() => {
+    if (rebaseReview) rebaseDialog.current?.showModal();
+  }, [rebaseReview]);
+
   useEffect(() => {
     if (!root || !repo) return;
     let active = true;
@@ -984,6 +925,10 @@ function App() {
   const jumpNeedsPage = view === "history" && historyTarget != null
     && repo?.branches.some(({ hash }) => hash === historyTarget.hash)
     && !commits?.some(({ hash }) => hash === historyTarget.hash);
+  const rebaseNeedsPage = view === "history" && !remoteHash && !!rebaseGraph
+    && (!commits?.some(({ hash }) => hash === rebaseGraph.upstream)
+      || !commits?.some(({ hash }) => hash === rebaseGraph.commits[0]));
+  const locatingRebase = rebaseNeedsPage && canLoadOlder && !older?.error;
   const locatingCommit = view === "history" && historyTarget != null
     && (Boolean(remoteHash && !loadedHistory)
       || (jumpNeedsPage && canLoadOlder && !older?.error));
@@ -991,22 +936,38 @@ function App() {
 
   useEffect(() => {
     if (view === "changes" || !root || !firstPage || !commits?.length || !canLoadOlder || older?.error || older?.loading) return;
-    function loadPage(base: Commit[], loaded: Commit[], repositoryRoot: string) {
-      const anchor = loaded[loaded.length - 1].hash;
+    async function loadPage(base: Commit[], loaded: Commit[], repositoryRoot: string, targets: string[] = []) {
       setOlderHistory({ base, commits: loaded, done: false, loading: true });
-      void repository<Commit[]>(repositoryRoot, {
-        kind: "older_history", hash: remoteHash ?? null, offset: loaded.length, anchor,
-      }).then(
-        (page) => setOlderHistory((current) => current?.base === base
-          ? { base, commits: [...loaded, ...page], done: page.length < 100, loading: false }
-          : current),
-        (failure) => setOlderHistory((current) => current?.base === base
-          ? { base, commits: loaded, done: false, loading: false, error: String(failure) }
-          : current),
-      );
+      const combined = [...loaded];
+      const missing = new Set(targets);
+      for (const { hash } of loaded) missing.delete(hash);
+      let done = false;
+      try {
+        do {
+          const page = await repository<Commit[]>(repositoryRoot, {
+            kind: "older_history", hash: remoteHash ?? null, offset: combined.length,
+            anchor: combined[combined.length - 1].hash,
+          });
+          combined.push(...page);
+          for (const { hash } of page) missing.delete(hash);
+          done = page.length < 100;
+        } while (!done && missing.size);
+        setOlderHistory((current) => current?.base === base
+          ? { base, commits: combined, done, loading: false }
+          : current);
+      } catch (failure) {
+        setOlderHistory((current) => current?.base === base
+          ? { base, commits: combined, done, loading: false, error: String(failure) }
+          : current);
+      }
+    }
+    if (rebaseNeedsPage && rebaseGraph) {
+      const target = rebaseGraph.commits[0];
+      void loadPage(firstPage, commits, root, target ? [rebaseGraph.upstream, target] : [rebaseGraph.upstream]);
+      return;
     }
     if (jumpNeedsPage) {
-      loadPage(firstPage, commits, root);
+      void loadPage(firstPage, commits, root);
       return;
     }
     const marker = historyEnd.current;
@@ -1014,11 +975,11 @@ function App() {
     const observer = new IntersectionObserver(([entry]) => {
       if (!entry.isIntersecting) return;
       observer.disconnect();
-      loadPage(firstPage, commits, root);
+      void loadPage(firstPage, commits, root);
     }, { root: marker.parentElement, rootMargin: "0px 0px 160px 0px" });
     observer.observe(marker);
     return () => observer.disconnect();
-  }, [view, root, remoteHash, firstPage, commits, canLoadOlder, older, jumpNeedsPage]);
+  }, [view, root, remoteHash, firstPage, commits, canLoadOlder, older, jumpNeedsPage, rebaseNeedsPage, rebaseGraph]);
 
 
   useEffect(() => {
@@ -1098,27 +1059,32 @@ function App() {
   const pendingPickDialog = useRef<HTMLDialogElement>(null);
   const previewHash = "pending-cherry-pick";
   const query = search.trim().toLowerCase();
-  const graphCommits = view === "search" && query
-    ? (commits ?? []).filter((commit) =>
-        `${commit.subject} ${commit.author} ${commit.hash} ${commit.refs}`.toLowerCase().includes(query),
-      )
-    : [...(commits ?? [])];
-  const headIndex = graphCommits.findIndex(({ hash }) => hash === repo?.head);
-  if (view === "history" && !remoteHash && pendingPicks.length && headIndex >= 0) {
-    graphCommits.splice(headIndex, 0, {
-      hash: previewHash,
-      parents: [graphCommits[headIndex].hash],
-      subject: message.trim().split("\n")[0] || "Pending commit",
-      author: "",
-      date: "",
-      refs: "",
-      local_only: true,
-      incoming: false,
-      incoming_for_pull: false,
-      incoming_branches: [],
-    });
-  }
-  const graph = layoutHistory(graphCommits);
+  const graphHead = repo?.head;
+  const hasPendingPick = pendingPicks.length > 0;
+  const pendingPickSubject = hasPendingPick ? message.trim().split("\n")[0] || "Pending commit" : "";
+  const { graphCommits, graph } = useMemo(() => {
+    const rows = view === "search" && query
+      ? (commits ?? []).filter((commit) =>
+          `${commit.subject} ${commit.author} ${commit.hash} ${commit.refs}`.toLowerCase().includes(query),
+        )
+      : [...(commits ?? [])];
+    const headIndex = rows.findIndex(({ hash }) => hash === graphHead);
+    if (view === "history" && !remoteHash && hasPendingPick && headIndex >= 0) {
+      rows.splice(headIndex, 0, {
+        hash: previewHash,
+        parents: [rows[headIndex].hash],
+        subject: pendingPickSubject,
+        author: "",
+        date: "",
+        refs: "",
+        local_only: true,
+        incoming: false,
+        incoming_for_pull: false,
+        incoming_branches: [],
+      });
+    }
+    return { graphCommits: rows, graph: layoutHistory(rows) };
+  }, [commits, graphHead, hasPendingPick, pendingPickSubject, query, remoteHash, view]);
 
   const history = view === "history";
   const graphWidth = laneX(graph.width - 1) + lanePadding;
@@ -1128,6 +1094,23 @@ function App() {
   const [historyListVisible, setHistoryListVisible] = useState(true);
   const listVisible = history ? historyListVisible : panels.list;
   const preferredWidth = history ? historyWidth : listWidth;
+
+  useEffect(() => {
+    if (view !== "history" || !listVisible || !rebaseGraph || locatingRebase) return;
+    const scroller = listPanel.current?.querySelector(".sidebar-scroll.history");
+    if (!scroller) return;
+    const rows = scroller.querySelectorAll("button:has(path[data-rebase-flow])");
+    const observer = new IntersectionObserver((entries) => {
+      for (const { target, isIntersecting } of entries) {
+        target.toggleAttribute("data-rebase-visible", isIntersecting);
+      }
+    }, { root: scroller });
+    rows.forEach((row) => observer.observe(row));
+    return () => {
+      observer.disconnect();
+      rows.forEach((row) => row.removeAttribute("data-rebase-visible"));
+    };
+  }, [view, listVisible, rebaseGraph, locatingRebase, graph]);
 
   useEffect(() => {
     if (resizingDiff) return;
@@ -1178,6 +1161,7 @@ function App() {
     setBusy(true);
     setError("");
     setNotice("");
+    setResetWarning("");
     try {
       const next = await action();
       if (!next) return;
@@ -1247,7 +1231,7 @@ function App() {
               folder: root,
             });
             setRepo(next);
-            if (showChangesOnFailure && next.cherry_picking) {
+            if (showChangesOnFailure && (next.cherry_picking || next.rebasing)) {
               setView("changes");
               setSelection(null);
             }
@@ -1568,6 +1552,12 @@ function App() {
                       if (!head) return;
                       const { subject } = commit;
                       void update(async () => {
+                        try {
+                          await repository<null>(root, { kind: "check_soft_reset", hash, branch, head });
+                        } catch (failure) {
+                          setResetWarning(String(failure));
+                          return null;
+                        }
                         const approved = await confirm(
                           `Move ${branch} to ${hash.slice(0, 7)} · ${subject}? The index and working tree stay as they are. This changes the local branch history.`,
                           { title: "Reset (Soft)", kind: "warning", okLabel: "Reset (Soft)", cancelLabel: "Cancel" },
@@ -1705,10 +1695,31 @@ function App() {
                   document.getElementById("commit-message")?.focus(),
                 );
               }}
+              onRebasePreview={setPreviewingRebase}
+              onRebase={() => {
+                void repository<RebasePreview>(repo.root, { kind: "rebase_preview" })
+                  .then((preview) => setRebaseReview({ repo, preview }))
+                  .catch((failure) => setError(String(failure)));
+              }}
+              onForcePush={() => {
+                void update(async () => {
+                  const plan = await repository<{
+                    branch: string; head: string; remote: string; destination: string; expected: string; removed: number;
+                  }>(root, { kind: "force_push_plan" });
+                  if (!plan.removed) return null;
+                  const target = `${plan.remote}/${plan.destination.replace(/^refs\/heads\//, "")}`;
+                  const approved = await confirm(
+                    `Replace ${target} (${plan.expected.slice(0, 7)}) with ${plan.branch} (${plan.head.slice(0, 7)})? This removes ${plan.removed} commit(s) from the remote branch’s history. Git cancels if the remote tip has changed.`,
+                    { title: "Force Push with Lease", kind: "warning", okLabel: "Force Push", cancelLabel: "Cancel" },
+                  );
+                  return approved ? repository<Snapshot>(root, { kind: "force_push", plan }) : null;
+                }, () => setNotice("Force push completed."));
+              }}
               onAction={(action) =>
                 runGitAction(
                   action,
                   {
+                    save_https_credential: "HTTPS credentials saved. Try Push again.",
                     set_origin: "Origin updated. Fetch to refresh remote commits.",
                     fetch: "Fetch completed.",
                     pull: "Pull completed.",
@@ -1724,30 +1735,30 @@ function App() {
               }
             />
           </div>
-          <div
-            className="workspace-layout"
-            role="group"
-            aria-label="Workspace layout"
-          >
-            <button
-              type="button"
-              title={`${listVisible ? "Hide" : "Show"} ${history ? "Commit List" : "File and commit list"}`}
-              aria-label={history ? "Commit List" : "File and commit list"}
-              aria-controls="workspace-list"
-              aria-expanded={listVisible}
-              onClick={() => {
-                if (history) setHistoryListVisible((visible) => !visible);
-                else setPanels((current) => ({ ...current, list: !current.list }));
-              }}
-            >
-              <List size={15} aria-hidden="true" />
-            </button>
-          </div>
         </div>
       )}
       {error && !picker && (
         <div className="banner error" role="alert">
           <CircleAlert size={15} aria-hidden="true" /> <span>{error}</span>
+        </div>
+      )}
+      {repo?.rebasing && (
+        <div className="banner cherry-pick-status">
+          <GitMerge size={15} aria-hidden="true" />
+          <span>Rebase paused. Resolve and stage conflicts in File Status, then continue.</span>
+          {view !== "changes" && <button type="button" onClick={() => {
+            setView("changes");
+            setPanels((current) => ({ ...current, list: true }));
+            setSelection(null);
+          }}>File Status</button>}
+          <button type="button" disabled={busy || conflicts.length > 0}
+            onClick={() => runGitAction({ kind: "continue_rebase" }, "Rebase completed.", true)}>
+            Continue rebase
+          </button>
+          <button type="button" disabled={busy}
+            onClick={() => runGitAction({ kind: "abort_rebase" }, "Rebase aborted.")}>
+            Abort rebase
+          </button>
         </div>
       )}
       {repo?.cherry_picking && (
@@ -1781,11 +1792,12 @@ function App() {
           </button>
         </div>
       )}
-      {notice && (
-        <div className="success-notice" key={notice}>
+      {(notice || resetWarning) && (
+        <div className="success-notice" key={resetWarning || notice}>
           <div className="success-notice-content">
-            <div className="banner" role="status">
-              <CircleCheck size={15} aria-hidden="true" /> <span>{notice}</span>
+            <div className={resetWarning ? "banner error" : "banner"} role={resetWarning ? "alert" : "status"}>
+              {resetWarning ? <CircleAlert size={15} aria-hidden="true" /> : <CircleCheck size={15} aria-hidden="true" />}
+              <span>{resetWarning || notice}</span>
             </div>
           </div>
         </div>
@@ -1930,9 +1942,9 @@ function App() {
                   ? "Commit history"
                   : "Search commits"}
               {!graphOnly && view !== "changes" && (
-                <span className="history-count" title={locatingCommit ? "Finding branch commit…" : "Loaded commits"}>
-                  {locatingCommit && (
-                    <span role="status" aria-label="Finding branch commit">
+                <span className="history-count" title={locatingRebase ? "Finding rebase commits…" : locatingCommit ? "Finding branch commit…" : "Loaded commits"}>
+                  {(locatingCommit || locatingRebase) && (
+                    <span role="status" aria-label={locatingRebase ? "Finding rebase commits" : "Finding branch commit"}>
                       <LoaderCircle size={11} className="spin" aria-hidden="true" />
                     </span>
                   )}
@@ -2003,7 +2015,7 @@ function App() {
                   className="commit-form"
                   onSubmit={(event) => {
                     event.preventDefault();
-                    if (busy || conflicts.length || !staged.length || !message.trim()) return;
+                    if (busy || repo.rebasing || conflicts.length || !staged.length || !message.trim()) return;
                     void update(
                       () =>
                         repository<Snapshot>(root, { kind: "commit", message }),
@@ -2028,7 +2040,7 @@ function App() {
                   />
                   <button
                     className="primary"
-                    disabled={busy || conflicts.length > 0 || !staged.length || !message.trim()}
+                    disabled={busy || repo.rebasing || conflicts.length > 0 || !staged.length || !message.trim()}
                     aria-describedby={conflicts.length ? "commit-conflict-help" : undefined}
                   >
                     <GitCommitHorizontal size={15} aria-hidden="true" />
@@ -2109,6 +2121,7 @@ function App() {
                           pullPreviewBranch={pullPreview?.root === root ? pullPreview?.branch : undefined}
                           pulling={pullingRoot === repo.root}
                           pushingHashes={pushingHashes}
+                          rebaseHashes={rebaseGraph && !locatingRebase ? rebaseHashes : undefined}
                           syncedHashes={graphSync?.root === repo.root ? graphSync.hashes : undefined}
                           isHead={commit.hash === repo.head}
                           author={commit.author}
@@ -2234,6 +2247,20 @@ function App() {
           )}
           <section className="diff-panel" aria-label="Diff" aria-busy={loadingDiff} ref={diffPanel}>
             <header>
+              <button
+                className="diff-list-toggle"
+                type="button"
+                title={`${listVisible ? "Hide" : "Show"} ${history ? "commit list" : "file and commit list"}`}
+                aria-label={`${listVisible ? "Hide" : "Show"} ${history ? "commit list" : "file and commit list"}`}
+                aria-controls="workspace-list"
+                aria-expanded={listVisible}
+                onClick={() => {
+                  if (history) setHistoryListVisible((visible) => !visible);
+                  else setPanels((current) => ({ ...current, list: !current.list }));
+                }}
+              >
+                {listVisible ? <PanelLeftClose size={15} aria-hidden="true" /> : <PanelLeftOpen size={15} aria-hidden="true" />}
+              </button>
               {diffSelection?.kind === "show" ? (
                 <GitCommitHorizontal size={16} aria-hidden="true" />
               ) : (
@@ -2300,6 +2327,28 @@ function App() {
             )}
           </section>
         </div>
+      )}
+      {rebaseReview && (
+        <dialog ref={rebaseDialog} className="repo-picker repository-action-picker"
+          aria-labelledby="rebase-review-title" onClose={() => setRebaseReview(null)}>
+          <header>
+            <GitMerge size={18} aria-hidden="true" />
+            <h2 id="rebase-review-title">Rebase onto upstream</h2>
+          </header>
+          <div className="repo-picker-content git-action-form">
+            <p>Reapply {rebaseReview.preview.commits.length} local commit(s) on the upstream of <strong>{rebaseReview.repo.branch}</strong>. Replayed commits receive new IDs.</p>
+            <RebaseSequence preview={rebaseReview.preview} theme={theme} commits={commits} />
+            <footer>
+              <button type="button" onClick={() => rebaseDialog.current?.close()}>Cancel</button>
+              <button type="button" className="primary" disabled={busy || repo !== rebaseReview.repo || !rebaseReview.preview.commits.length} onClick={() => {
+                const { branch, head } = rebaseReview.repo;
+                if (!head) return;
+                rebaseDialog.current?.close();
+                runGitAction({ kind: "rebase_upstream", branch, head, upstream: rebaseReview.preview.upstream }, "Rebase completed.", true);
+              }}>Rebase</button>
+            </footer>
+          </div>
+        </dialog>
       )}
       {graphMenu && repo && createPortal(
         <div
@@ -2391,8 +2440,8 @@ function App() {
             <code>{conflictFile.path}</code>
           </div>
             {([
-              ["current", "Keep current", `Use the entire file from ${repo?.branch ?? "the current branch"}, then stage it.`, GitBranch, conflictFile.index === "D"],
-              ["incoming", "Accept incoming", "Use the entire file from the incoming commit, then stage it.", Download, conflictFile.worktree === "D"],
+              ["current", repo?.rebasing ? "Keep upstream side" : "Keep current", repo?.rebasing ? "Use the file from the rebased history so far, then stage it." : `Use the entire file from ${repo?.branch ?? "the current branch"}, then stage it.`, GitBranch, conflictFile.index === "D"],
+              ["incoming", repo?.rebasing ? "Keep replayed commit" : "Accept incoming", repo?.rebasing ? "Use the file from the local commit being replayed, then stage it." : "Use the entire file from the incoming commit, then stage it.", Download, conflictFile.worktree === "D"],
               ["mark_resolved", "Mark as resolved", "Stage the file as it is now. Choose this after editing it yourself.", CircleCheck, false],
             ] as const).map(([resolution, label, description, Icon, deletes]) => (
               <button key={resolution} className="resolve-option" type="button" disabled={busy} onClick={() => {

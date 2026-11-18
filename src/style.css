@@ -529,7 +529,6 @@ main:has(.repo-navigation [data-pull-count]:hover) [data-branch-pull-preview="tr
   color: var(--accent);
 }
 .diff-panel {
-  container: diff-panel / inline-size;
   min-width: 0;
   min-height: 0;
   display: flex;
@@ -1285,15 +1284,21 @@ button.image-preview-canvas:hover:not(:disabled) {
   grid-template-columns: minmax(150px, 17%) minmax(220px, 28%) minmax(0, 1fr);
 }
 .repo-navigation {
-  display: block;
+  display: flex;
+  flex-direction: column;
   min-width: 0;
-  overflow-x: hidden;
-  overflow-y: auto;
-  scrollbar-width: none;
+  overflow: hidden;
   padding: 10px 8px;
   background: var(--navigation);
 }
-.repo-navigation::-webkit-scrollbar {
+.repo-navigation-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+.repo-navigation-scroll::-webkit-scrollbar {
   display: none;
 }
 .repo-navigation:focus-visible {
@@ -1432,6 +1437,19 @@ button.image-preview-canvas:hover:not(:disabled) {
   border-bottom: 1px solid var(--line);
   background: var(--toolbar);
   overflow-x: auto;
+}
+.git-toolbar-group {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 3px;
+}
+.git-toolbar-group + .git-toolbar-group {
+  margin-inline-start: 11px;
+}
+.git-toolbar-group + .git-toolbar-group:last-child {
+  margin-inline-start: auto;
+  padding-inline-start: 11px;
 }
 .git-toolbar button {
   display: grid;
@@ -1601,13 +1619,6 @@ button.image-preview-canvas:hover:not(:disabled) {
   color: var(--accent);
 }
 
-.diff-commit-actions {
-  display: flex;
-  min-width: 0;
-  gap: 5px;
-  margin-inline-start: auto;
-}
-.diff-commit-actions button,
 .diff-commit-menu-items button {
   display: inline-flex;
   flex: none;
@@ -1615,49 +1626,24 @@ button.image-preview-canvas:hover:not(:disabled) {
   gap: 5px;
   white-space: nowrap;
 }
-.diff-commit-actions button {
-  gap: 7px;
-  min-height: 32px;
-  padding: 6px 9px;
-  border-color: transparent;
-  background: transparent;
-}
-.diff-commit-actions button:hover:not(:disabled),
-.diff-commit-actions button:focus-visible {
-  background: var(--active);
-}
-.diff-commit-actions .commit-reset-action {
-  position: relative;
-  margin-inline-start: 9px;
-}
-.diff-commit-actions .commit-reset-action::before {
-  position: absolute;
-  inset-block: 5px;
-  inset-inline-start: -8px;
-  border-inline-start: 1px solid var(--line);
-  content: "";
-}
 .diff-commit-menu {
-  display: none;
   position: relative;
   flex: none;
   margin-inline-start: auto;
 }
 .diff-commit-menu > summary {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 8px;
-  border: 1px solid var(--line);
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 27px;
+  border: 1px solid transparent;
   border-radius: 6px;
+  color: var(--muted);
   cursor: pointer;
   list-style: none;
 }
 .diff-commit-menu > summary::-webkit-details-marker {
   display: none;
-}
-.diff-commit-menu[open] > summary svg {
-  transform: rotate(90deg);
 }
 .diff-commit-menu-items {
   position: absolute;
@@ -1709,14 +1695,6 @@ button.image-preview-canvas:hover:not(:disabled) {
   border-top: 1px solid var(--line);
   content: "";
 }
-@container diff-panel (max-width: 770px) {
-  .diff-commit-actions {
-    display: none;
-  }
-  .diff-commit-menu {
-    display: block;
-  }
-}
 .cherry-pick-status {
   align-items: center;
 }
@@ -1734,16 +1712,11 @@ button.image-preview-canvas:hover:not(:disabled) {
   background: var(--toolbar);
 }
 #workspace-git-actions {
+  flex: 1;
   min-width: 0;
 }
-.workspace-layout {
-  display: inline-flex;
-  flex: none;
-  margin-inline-start: auto;
-  gap: 3px;
-}
 .sidebar-toggle,
-.workspace-layout button {
+.diff-list-toggle {
   display: grid;
   place-items: center;
   width: 27px;
@@ -1758,7 +1731,10 @@ button.image-preview-canvas:hover:not(:disabled) {
   height: 30px;
 }
 .sidebar-toggle[aria-expanded="true"],
-.workspace-layout button[aria-expanded="true"] {
+.diff-list-toggle {
+  flex: none;
+}
+.diff-list-toggle[aria-expanded="true"] {
   color: var(--accent);
   background: var(--active);
 }
@@ -2613,6 +2589,371 @@ button.image-preview-canvas:hover:not(:disabled) {
     animation: commit-edge-pull 550ms linear infinite;
   }
 }
+.rebase-flow-layer {
+  opacity: 0;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .history [data-rebase-visible] :is(path[data-rebase-flow], .rebase-flow-layer) {
+    animation: rebase-dash-phase 480ms linear infinite;
+  }
+  .history [data-rebase-visible] .rebase-flow-layer[data-phase="1"] {
+    animation-delay: -360ms;
+  }
+  .history [data-rebase-visible] .rebase-flow-layer[data-phase="2"] {
+    animation-delay: -240ms;
+  }
+  .history [data-rebase-visible] .rebase-flow-layer[data-phase="3"] {
+    animation-delay: -120ms;
+  }
+}
+@keyframes rebase-dash-phase {
+  0%, 100% { opacity: 0.9; }
+  25%, 75% { opacity: 0; }
+}
 @keyframes commit-edge-pull {
   to { stroke-dashoffset: -7px; }
+}
+
+.credential-form {
+  display: grid;
+  gap: 12px;
+}
+.credential-token-field {
+  margin-top: -7px;
+}
+.credential-token-field button {
+  display: grid;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+.credential-form .credential-storage-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: -3px 0 0;
+}
+.credential-storage-note svg {
+  flex: none;
+  margin-top: 2px;
+}
+.credential-token-help {
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.credential-token-help summary {
+  cursor: pointer;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+}
+.credential-provider {
+  display: grid;
+  gap: 5px;
+  padding-top: 9px;
+  margin-top: 9px;
+  border-top: 1px solid var(--line);
+}
+.credential-provider button {
+  display: inline-flex;
+  width: fit-content;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 7px;
+}
+.credential-provider p {
+  margin: 0;
+}
+.credential-provider code {
+  overflow-wrap: anywhere;
+}
+
+.credential-brand {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  background: currentColor;
+  mask: var(--credential-brand-mark) center / contain no-repeat;
+}
+.credential-brand[data-provider="github"] {
+  --credential-brand-mark: url("/credential-github.svg");
+}
+.credential-brand[data-provider="bitbucket"] {
+  --credential-brand-mark: url("/credential-bitbucket.svg");
+  color: #579dff;
+}
+
+.rebase-sequence {
+  display: grid;
+  max-height: 212px;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+  font-size: 11px;
+}
+.rebase-sequence > li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding-inline-end: 6px;
+}
+.rebase-sequence strong {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rebase-sequence code {
+  flex: none;
+  color: var(--muted);
+}
+.rebase-sequence .commit-dot {
+  width: 11px;
+  height: 11px;
+}
+
+.repo-info {
+  flex: none;
+  margin-top: 6px;
+  padding-top: 7px;
+  border-top: 1px solid var(--line);
+}
+.repo-info-trigger,
+.repo-info-play {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+.repo-info-trigger {
+  width: 100%;
+  min-height: 34px;
+  padding: 5px 8px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: start;
+}
+.repo-info-trigger svg {
+  flex: none;
+}
+.repo-info-trigger > svg:first-child {
+  color: var(--accent);
+}
+.repo-info-chevron {
+  margin-inline-start: auto;
+}
+.repo-info-trigger:hover:not(:disabled) {
+  color: var(--text);
+}
+.workspace[data-navigation="collapsed"] .repo-info-trigger {
+  justify-content: center;
+  padding-inline: 0;
+}
+.workspace[data-navigation="collapsed"] .repo-info-trigger > :is(span, .repo-info-chevron) {
+  display: none;
+}
+.repo-info-content {
+  display: grid;
+}
+.repo-info-content p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+.repo-info-example {
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  font-size: 12px;
+}
+.info-example-history {
+  min-height: 128px;
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.info-example-history li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+}
+.info-example-history .commit-dot {
+  width: 12px;
+  height: 12px;
+}
+.info-graph-ref {
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: var(--active);
+  color: var(--accent);
+  font-size: 10px;
+}
+.info-graph-ref.remote {
+  color: var(--status-added);
+}
+.repo-info-dialog {
+  width: min(740px, calc(100vw - 32px));
+}
+.repo-info-content {
+  grid-template-columns: minmax(145px, 176px) minmax(0, 1fr);
+  gap: 24px;
+  padding: 20px 24px;
+}
+.repo-info-content .repo-info-actions {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--navigation);
+}
+.repo-info-group {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.repo-info-group + .repo-info-group {
+  padding-top: 9px;
+  border-top: 1px solid var(--line);
+}
+.repo-info-group > strong {
+  padding: 3px 8px 5px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 650;
+}
+.repo-info-group button {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  min-height: 33px;
+  padding: 5px 8px;
+  border-color: transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: start;
+}
+.repo-info-group button svg {
+  flex: none;
+}
+.repo-info-group button:hover:not(:disabled) {
+  color: var(--text);
+}
+.repo-info-group button[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--accent) 25%, transparent);
+  background: var(--active);
+  color: var(--accent);
+}
+.repo-info-detail {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  min-width: 0;
+}
+.repo-info-detail h3 {
+  margin: 0;
+  font-size: 22px;
+}
+.repo-info-controls {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 10px;
+}
+.repo-info-stages {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface);
+}
+.repo-info-stages button,
+.repo-info-play {
+  padding: 4px 8px;
+  border-color: transparent;
+  background: transparent;
+  font-size: 11px;
+}
+.repo-info-stages button[aria-pressed="true"] {
+  background: var(--active);
+  color: var(--accent);
+}
+.repo-info-frames {
+  display: grid;
+}
+.repo-info-frame {
+  grid-area: 1 / 1;
+  min-width: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+.repo-info-frame[data-current="true"] {
+  opacity: 1;
+  pointer-events: auto;
+}
+.repo-info-example[data-paused="true"] .commit-graph path,
+.repo-info-frame[data-current="false"] .commit-graph path {
+  animation-play-state: paused;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .repo-info-frame {
+    transform: translateY(3px);
+    transition: opacity 280ms ease, transform 320ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  .repo-info-frame[data-current="true"] {
+    transform: translateY(0);
+  }
+}
+.info-action-flow {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  min-height: 105px;
+  gap: 8px;
+}
+.info-action-flow > :is(span, strong) {
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.info-action-flow svg {
+  color: var(--accent);
+}
+@media (max-width: 520px) {
+  .repo-info-content {
+    grid-template-columns: 1fr;
+    gap: 16px;
+    padding: 14px 16px;
+  }
+  .repo-info-group {
+    display: flex;
+    flex-wrap: wrap;
+  }
+  .repo-info-group > strong {
+    flex-basis: 100%;
+  }
+  .repo-info-group button {
+    flex: none;
+  }
 }

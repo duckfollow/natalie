@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import { Dropdown } from "./Dropdown";
 import { useEffect, useRef, useState } from "react";
 import {
@@ -6,10 +7,16 @@ import {
   ArrowUpCircle,
   Cloud,
   CloudDownload,
+  ExternalLink,
+  Eye,
+  EyeOff,
+  LockKeyhole,
+  UserRound,
   GitBranch,
   GitCommitHorizontal,
   GitMerge,
   Layers3,
+  KeyRound,
   Link2,
   Plus,
   Save,
@@ -26,20 +33,30 @@ export type GitAction =
   | { kind: "tag"; name: string; hash: string }
   | { kind: "merge"; branch: string }
   | { kind: "stash"; message: string }
-  | { kind: "set_origin"; url: string };
+  | { kind: "set_origin"; url: string }
+  | { kind: "save_https_credential"; remote: string; username: string; token: string };
 
-const operations = [
-  { label: "Commit", icon: GitCommitHorizontal },
-  { label: "Pull", icon: ArrowDownCircle },
-  { label: "Push", icon: ArrowUpCircle },
-  { label: "Fetch", icon: CloudDownload },
-  { label: "Branch", icon: GitBranch },
-  { label: "Merge", icon: GitMerge },
-  { label: "Stash", icon: Layers3 },
-  { label: "Origin", icon: Settings2 },
+const operationGroups = [
+  { name: "Commit", actions: [
+    { label: "Commit", icon: GitCommitHorizontal },
+  ] },
+  { name: "Remote sync", actions: [
+    { label: "Pull", icon: ArrowDownCircle },
+    { label: "Push", icon: ArrowUpCircle },
+    { label: "Fetch", icon: CloudDownload },
+  ] },
+  { name: "Branch and worktree", actions: [
+    { label: "Branch", icon: GitBranch },
+    { label: "Merge", icon: GitMerge },
+    { label: "Stash", icon: Layers3 },
+  ] },
+  { name: "Remote settings", actions: [
+    { label: "Origin", icon: Settings2 },
+    { label: "Credentials", icon: KeyRound },
+  ] },
 ] as const;
 
-type Prompt = "Publish" | "Branch" | "Merge" | "Stash" | "Origin";
+type Prompt = "Publish" | "Branch" | "Merge" | "Stash" | "Origin" | "Credentials";
 
 export function GitToolbar({
   busy,
@@ -59,6 +76,9 @@ export function GitToolbar({
   changes,
   onCommit,
   onAction,
+  onForcePush,
+  onRebase,
+  onRebasePreview,
 }: {
   busy: boolean;
   refreshing: boolean;
@@ -77,14 +97,33 @@ export function GitToolbar({
   changes: number;
   onCommit: () => void;
   onAction: (action: GitAction) => void;
+  onForcePush: () => void;
+  onRebase: () => void;
+  onRebasePreview: (active: boolean) => void;
 }) {
   const [toolbarPrompt, setPrompt] = useState<Prompt | null>(null);
   const [value, setValue] = useState("");
+  const [username, setUsername] = useState("");
+  const [token, setToken] = useState("");
+  const [showToken, setShowToken] = useState(false);
+  const [tokenHelpError, setTokenHelpError] = useState("");
   const prompt = renameBranch ? "Rename" : tagCommit ? "Tag" : branchCommit ? "Branch" : toolbarPrompt;
   function closePrompt() {
     setValue("");
+    setUsername("");
+    setToken("");
+    setShowToken(false);
+    setTokenHelpError("");
     setPrompt(null);
     onPromptClose();
+  }
+  async function openTokenSetup(provider: "github" | "bitbucket") {
+    setTokenHelpError("");
+    try {
+      await invoke("open_token_setup", { provider });
+    } catch (error) {
+      setTokenHelpError(String(error));
+    }
   }
   const dialog = useRef<HTMLDialogElement>(null);
   const mergeBranches = branches.filter((branch) => branch !== currentBranch);
@@ -98,76 +137,98 @@ export function GitToolbar({
   return (
     <>
       <div className="git-toolbar" role="group" aria-label="Git actions">
-        {operations.map(({ label, icon: Icon }) => (
-          <button
-            key={label}
-            data-action={label === "Pull" ? "pull" : undefined}
-            type="button"
-            title={
-              label === "Pull" ? "Pull using fast-forward only"
-                : label === "Push" && !canPush ? "Check out a branch with a commit to push"
-                : label === "Push" && !hasUpstream ? (remotes.length ? "Publish branch" : "Add a remote to publish")
-                : label
-            }
-            aria-disabled={refreshing}
-            disabled={
-              (busy && !refreshing) ||
-              (label === "Push" && !canPush) ||
-              (label === "Merge" && !mergeBranches.length) ||
-              (label === "Stash" && !changes)
-            }
-            onClick={() => {
-              if (busy) return;
-              switch (label) {
-                case "Commit":
-                  onCommit();
-                  break;
-                case "Pull":
-                  onAction({ kind: "pull" });
-                  break;
-                case "Push":
-                  if (hasUpstream) {
-                    onAction({ kind: "push" });
-                  } else if (remotes.length) {
-                    setValue(remotes.includes("origin") ? "origin" : remotes[0]);
-                    setPrompt("Publish");
-                  } else {
-                    setValue("");
-                    setPrompt("Origin");
+        {operationGroups.map(({ name, actions }) => (
+          <div className="git-toolbar-group" role="group" aria-label={name} key={name}>
+            {actions.map(({ label, icon: Icon }) => (
+              <button
+                key={label}
+                data-action={label === "Pull" ? "pull" : undefined}
+                type="button"
+                title={
+                  label === "Pull" ? "Pull using fast-forward only"
+                    : label === "Push" && !canPush ? "Check out a branch with a commit to push"
+                    : label === "Push" && !hasUpstream ? (remotes.length ? "Publish branch" : "Add a remote to publish")
+                    : label
+                }
+                aria-disabled={refreshing}
+                disabled={
+                  (busy && !refreshing) ||
+                  (label === "Push" && !canPush) ||
+                  (label === "Merge" && !mergeBranches.length) ||
+                  (label === "Stash" && !changes) ||
+                  (label === "Credentials" && !remotes.length)
+                }
+                onClick={() => {
+                  if (busy) return;
+                  switch (label) {
+                    case "Commit":
+                      onCommit();
+                      break;
+                    case "Pull":
+                      onAction({ kind: "pull" });
+                      break;
+                    case "Push":
+                      if (hasUpstream) {
+                        onAction({ kind: "push" });
+                      } else if (remotes.length) {
+                        setValue(remotes.includes("origin") ? "origin" : remotes[0]);
+                        setPrompt("Publish");
+                      } else {
+                        setValue("");
+                        setPrompt("Origin");
+                      }
+                      break;
+                    case "Fetch":
+                      onAction({ kind: "fetch" });
+                      break;
+                    case "Branch":
+                    case "Merge":
+                    case "Stash":
+                    case "Origin":
+                      setValue(label === "Origin" ? (originUrl ?? "") : label === "Merge" ? (mergeBranches[0] ?? "") : "");
+                      setPrompt(label);
+                      break;
+                    case "Credentials":
+                      setValue(remotes.includes("origin") ? "origin" : remotes[0] ?? "");
+                      setPrompt("Credentials");
+                      break;
                   }
-                  break;
-                case "Fetch":
-                  onAction({ kind: "fetch" });
-                  break;
-                case "Branch":
-                case "Merge":
-                case "Stash":
-                case "Origin":
-                  setValue(label === "Origin" ? (originUrl ?? "") : label === "Merge" ? (mergeBranches[0] ?? "") : "");
-                  setPrompt(label);
-              }
-            }}
-          >
-            <span className="git-toolbar-icon">
-              <Icon size={20} aria-hidden="true" />
-            </span>
-            {label}
-            {label === "Commit" && changes > 0 && (
-              <small className="git-toolbar-count" aria-label={`${changes} changed files`}>
-                {changes}
-              </small>
+                }}
+              >
+                <span className="git-toolbar-icon">
+                  <Icon size={20} aria-hidden="true" />
+                </span>
+                {label}
+                {label === "Commit" && changes > 0 && (
+                  <small className="git-toolbar-count" aria-label={`${changes} changed files`}>
+                    {changes}
+                  </small>
+                )}
+                {label === "Pull" && behind != null && behind > 0 && (
+                  <small className="git-toolbar-count" aria-label={`${behind} commits to pull`}>
+                    {behind}
+                  </small>
+                )}
+                {label === "Push" && ahead != null && ahead > 0 && (
+                  <small className="git-toolbar-count" aria-label={`${ahead} commits to push`}>
+                    {ahead}
+                  </small>
+                )}
+              </button>
+            ))}
+            {name === "Remote sync" && canPush && hasUpstream && (ahead ?? 0) > 0 && (behind ?? 0) > 0 && (
+              <button type="button" disabled={busy} onClick={onRebase} onMouseEnter={() => onRebasePreview(true)}
+                onMouseLeave={() => onRebasePreview(false)} onFocus={() => onRebasePreview(true)}
+                onBlur={() => onRebasePreview(false)} title="Rebase onto upstream">
+                <GitMerge size={16} aria-hidden="true" /> Rebase…
+              </button>
             )}
-            {label === "Pull" && behind != null && behind > 0 && (
-              <small className="git-toolbar-count" aria-label={`${behind} commits to pull`}>
-                {behind}
-              </small>
+            {name === "Remote sync" && canPush && hasUpstream && (behind ?? 0) > 0 && (
+              <button type="button" disabled={busy} onClick={onForcePush} title="Force Push with Lease">
+                <ArrowUpCircle size={16} aria-hidden="true" /> Force Push…
+              </button>
             )}
-            {label === "Push" && ahead != null && ahead > 0 && (
-              <small className="git-toolbar-count" aria-label={`${ahead} commits to push`}>
-                {ahead}
-              </small>
-            )}
-          </button>
+          </div>
         ))}
       </div>
       {prompt && (
@@ -179,13 +240,14 @@ export function GitToolbar({
         >
           <header>
             {prompt === "Publish" && <ArrowUpCircle size={20} aria-hidden="true" />}
+            {prompt === "Credentials" && <KeyRound size={20} aria-hidden="true" />}
             {prompt === "Origin" && <Cloud size={20} aria-hidden="true" />}
             {prompt === "Tag" && <Tag size={20} aria-hidden="true" />}
             {(prompt === "Branch" || prompt === "Rename") && <GitBranch size={20} aria-hidden="true" />}
             {prompt === "Merge" && <GitMerge size={20} aria-hidden="true" />}
             {prompt === "Stash" && <Layers3 size={20} aria-hidden="true" />}
             <h2 id="git-action-title">
-              {prompt === "Publish" ? "Publish branch" : prompt === "Rename" ? "Rename branch" : prompt === "Tag" ? "Create tag" : prompt === "Branch"
+              {prompt === "Credentials" ? "HTTPS credentials" : prompt === "Publish" ? "Publish branch" : prompt === "Rename" ? "Rename branch" : prompt === "Tag" ? "Create tag" : prompt === "Branch"
                 ? "Create branch"
                 : prompt === "Merge"
                   ? `Merge into ${currentBranch}`
@@ -216,6 +278,10 @@ export function GitToolbar({
                 onAction({ kind: "stash", message: value });
               if (prompt === "Origin")
                 onAction({ kind: "set_origin", url: value.trim() });
+              if (prompt === "Credentials") {
+                if (!remotes.includes(value) || !username.trim() || !token.trim()) return;
+                onAction({ kind: "save_https_credential", remote: value, username: username.trim(), token });
+              }
               closePrompt();
             }}
           >
@@ -230,6 +296,55 @@ export function GitToolbar({
                 />
                 <p>Push <code>{currentBranch}</code> and set <code>{value}/{currentBranch}</code> as its upstream.</p>
               </>
+            ) : prompt === "Credentials" ? (
+              <div className="credential-form">
+                <Dropdown label="Remote" options={remotes.map((remote) => ({ value: remote, label: remote }))}
+                  value={value} onChange={setValue} />
+                <label>
+                  Username
+                  <span className="repository-action-field">
+                    <UserRound size={15} aria-hidden="true" />
+                    <input autoFocus required value={username} onChange={(event) => setUsername(event.target.value)}
+                      spellCheck={false} autoCapitalize="none" autoComplete="username"
+                      placeholder="Username for this Git provider" />
+                  </span>
+                </label>
+                <label htmlFor="credential-access-token">Access token</label>
+                <div className="repository-action-field credential-token-field">
+                  <KeyRound size={15} aria-hidden="true" />
+                  <input id="credential-access-token" type={showToken ? "text" : "password"} required
+                    value={token} onChange={(event) => setToken(event.target.value)}
+                    autoComplete="off" spellCheck={false} autoCapitalize="none"
+                    placeholder="Paste access token" aria-describedby="credential-storage-note" />
+                  <button type="button" onClick={() => setShowToken((visible) => !visible)}
+                    aria-label={showToken ? "Hide access token" : "Show access token"}
+                    title={showToken ? "Hide access token" : "Show access token"}>
+                    {showToken ? <EyeOff size={15} aria-hidden="true" /> : <Eye size={15} aria-hidden="true" />}
+                  </button>
+                </div>
+                <p id="credential-storage-note" className="credential-storage-note">
+                  <LockKeyhole size={13} aria-hidden="true" />
+                  Saved in macOS Keychain for this remote’s HTTPS push URL.
+                </p>
+                <details className="credential-token-help">
+                  <summary>Where do I get a token?</summary>
+                  <div className="credential-provider">
+                    <button type="button" onClick={() => void openTokenSetup("github")}>
+                      <span className="credential-brand" data-provider="github" aria-hidden="true" />
+                      GitHub <ExternalLink size={12} aria-hidden="true" />
+                    </button>
+                    <p>Create a fine-grained token for this repo with <strong>Contents: Read and write</strong>. Use your GitHub username.</p>
+                  </div>
+                  <div className="credential-provider">
+                    <button type="button" onClick={() => void openTokenSetup("bitbucket")}>
+                      <span className="credential-brand" data-provider="bitbucket" aria-hidden="true" />
+                      Bitbucket Cloud <ExternalLink size={12} aria-hidden="true" />
+                    </button>
+                    <p>Create an API token with repository read and write scopes. Use <code>x-bitbucket-api-token-auth</code> as the username.</p>
+                  </div>
+                  {tokenHelpError && <p role="alert">{tokenHelpError}</p>}
+                </details>
+              </div>
             ) : prompt === "Merge" ? (
               <div className="merge-branch-flow">
                 <Dropdown
@@ -315,9 +430,9 @@ export function GitToolbar({
               </button>
               <button
                 className="primary"
-                disabled={busy || (prompt !== "Stash" && !value.trim()) || value.trim() === renameBranch}
+                disabled={busy || (prompt !== "Stash" && !value.trim()) || value.trim() === renameBranch || (prompt === "Credentials" && (!username.trim() || !token.trim()))}
               >
-                {prompt === "Publish"
+                {prompt === "Credentials" ? <><Save size={14} aria-hidden="true" /> Save credentials</> : prompt === "Publish"
                   ? <><ArrowUpCircle size={14} aria-hidden="true" /> Publish branch</>
                   : prompt === "Origin"
                   ? originUrl == null

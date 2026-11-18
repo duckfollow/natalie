@@ -66,6 +66,7 @@ struct Snapshot {
     stashes: Vec<Reference>,
     submodules: Vec<String>,
     cherry_picking: bool,
+    rebasing: bool,
     has_upstream: bool,
     ahead: Option<usize>,
     behind: Option<usize>,
@@ -84,7 +85,7 @@ fn run(root: &Path, args: &[&str]) -> Result<Output, String> {
     ) {
         command.arg("--literal-pathspecs");
     }
-    if args == ["cherry-pick", "--continue"] {
+    if args == ["cherry-pick", "--continue"] || args == ["rebase", "--continue"] {
         command.env("GIT_EDITOR", "true");
     }
     command
@@ -278,6 +279,16 @@ fn repo_version(root: &Path, branch: Option<&str>, changes: &[Change]) -> Result
     Ok(format!("{:016x}", hash.finish()))
 }
 
+fn rebase_in_progress(root: &Path) -> Result<bool, String> {
+    for name in ["rebase-merge", "rebase-apply"] {
+        let path = git(root, &["rev-parse", "--path-format=absolute", "--git-path", name])?;
+        if Path::new(path.trim_end_matches('\n')).is_dir() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 fn snapshot(folder: &Path) -> Result<Snapshot, String> {
     let root = git(folder, &["rev-parse", "--show-toplevel"])?;
     let root = root.trim_end_matches('\n').to_owned();
@@ -348,6 +359,7 @@ fn snapshot(folder: &Path) -> Result<Snapshot, String> {
     )?
     .status
     .success();
+    let rebasing = rebase_in_progress(path)?;
     Ok(Snapshot {
         root,
         repo_version,
@@ -363,6 +375,7 @@ fn snapshot(folder: &Path) -> Result<Snapshot, String> {
         stashes,
         submodules,
         cherry_picking,
+        rebasing,
         has_upstream,
         ahead,
         behind,
@@ -431,6 +444,11 @@ enum Action {
     Commit {
         message: String,
     },
+    SaveHttpsCredential {
+        remote: String,
+        username: String,
+        token: String,
+    },
     SetOrigin {
         url: String,
     },
@@ -481,11 +499,18 @@ enum Action {
         #[serde(default)]
         no_commit: bool,
     },
+    ForcePushPlan,
+    ForcePush { plan: ForcePushPlan },
+    CheckSoftReset { hash: String, branch: String, head: String },
     ResetSoft {
         hash: String,
         branch: String,
         head: String,
     },
+    RebasePreview,
+    RebaseUpstream { branch: String, head: String, upstream: String },
+    ContinueRebase,
+    AbortRebase,
     ContinueCherryPick,
     AbortCherryPick,
     OlderHistory {
@@ -515,6 +540,8 @@ enum Response {
     Text(String),
     ImagePreview(ImagePreview),
     History(Vec<Commit>),
+    ForcePushPlan(ForcePushPlan),
+    RebasePreview(RebasePreview),
 }
 
 fn validate_commit_hash(hash: &str) -> Result<(), String> {
@@ -586,7 +613,8 @@ fn discard_paths(root: &Path, paths: &[String]) -> Result<(), String> {
                 ],
             )?;
         } else if change.index != '?' && change.index != ' ' {
-            git(root, &["rm", "-f", "--", path])?;
+            // Restoring a parent file can already remove a staged child path.
+            git(root, &["rm", "-f", "--ignore-unmatch", "--", path])?;
         } else {
             git(root, &["clean", "-f", "--", path])?;
         }
@@ -732,6 +760,118 @@ fn git_with_input(root: &Path, args: &[&str], input: &[u8]) -> Result<(), String
     write.map_err(|error| error.to_string())
 }
 
+fn https_credential_url(value: &str) -> Result<reqwest::Url, String> {
+    let url = reqwest::Url::parse(value).map_err(|_| "The remote needs a valid HTTPS URL.")?;
+    if url.scheme() != "https" || url.host().is_none() || !url.username().is_empty()
+        || url.password().is_some() || url.query().is_some() || url.fragment().is_some()
+        || url.path() == "/"
+    {
+        return Err("Use an HTTPS repository URL without embedded credentials, query, or fragment.".into());
+    }
+    Ok(url)
+}
+
+fn save_https_credential(root: &Path, remote: &str, username: &str, token: &str) -> Result<(), String> {
+    if [username, token].iter().any(|value| value.trim().is_empty() || value.contains(['\n', '\r', '\0'])) {
+        return Err("Enter a username and token without line breaks.".into());
+    }
+    if !git(root, &["remote"])?.lines().any(|name| name == remote) {
+        return Err("Select a configured remote.".into());
+    }
+    let target = git(root, &["remote", "get-url", "--push", "--", remote])?;
+    let url = https_credential_url(target.trim_end())?;
+    let input = format!("url={url}\nusername={username}\npassword={token}\n\n");
+    git_with_input(
+        root,
+        &["-c", "credential.helper=", "-c", "credential.helper=osxkeychain",
+          "-c", "credential.useHttpPath=true", "credential", "approve"],
+        input.as_bytes(),
+    ).map_err(|_| "Could not save credentials to macOS Keychain.".to_owned())?;
+
+    let scope = format!("credential.{url}");
+    git(root, &["config", "--local", &format!("{scope}.useHttpPath"), "true"])?;
+    git(root, &["config", "--local", &format!("{scope}.username"), username])?;
+    let helper = format!("{scope}.helper");
+    git(root, &["config", "--local", "--replace-all", &helper, ""])?;
+    git(root, &["config", "--local", "--add", &helper, "osxkeychain"])?;
+    Ok(())
+}
+
+#[derive(Deserialize, Serialize, PartialEq)]
+struct ForcePushPlan {
+    branch: String,
+    head: String,
+    remote: String,
+    destination: String,
+    expected: String,
+    removed: usize,
+}
+
+fn force_push_plan(root: &Path) -> Result<ForcePushPlan, String> {
+    let branch = git(root, &["symbolic-ref", "--quiet", "HEAD"])?;
+    let branch = branch.trim_end();
+    let tracking = git(root, &[
+        "for-each-ref", "--format=%(upstream:remotename)%09%(upstream:remoteref)%09%(upstream)",
+        branch,
+    ])?;
+    let fields: Vec<_> = tracking.trim_end_matches('\n').split('\t').collect();
+    let [remote, destination, upstream] = fields.as_slice() else {
+        return Err("The branch needs a remote upstream. Fetch and try again.".into());
+    };
+    if !destination.starts_with("refs/heads/") || !upstream.starts_with("refs/remotes/") {
+        return Err("The branch needs a remote upstream. Fetch and try again.".into());
+    }
+    let push_urls = git(root, &["remote", "get-url", "--push", "--all", "--", remote])?;
+    if push_urls.lines().count() != 1 {
+        return Err("Force push requires a remote with exactly one push URL.".into());
+    }
+    let head = git(root, &["rev-parse", "--verify", "HEAD"])?;
+    let expected = git(root, &["rev-parse", "--verify", upstream])?;
+    let range = format!("{}..{}", head.trim_end(), expected.trim_end());
+    let removed = git(root, &["rev-list", "--count", &range])?
+        .trim().parse().map_err(|_| "Could not count remote commits.")?;
+    Ok(ForcePushPlan {
+        branch: branch.trim_start_matches("refs/heads/").into(),
+        head: head.trim_end().into(), remote: (*remote).into(), destination: (*destination).into(),
+        expected: expected.trim_end().into(), removed,
+    })
+}
+
+#[derive(Serialize)]
+struct RebasePreview {
+    upstream: String,
+    upstream_ref: String,
+    commits: Vec<String>,
+}
+
+fn rebase_preview(root: &Path) -> Result<RebasePreview, String> {
+    let upstream = git(root, &["rev-parse", "--verify", "@{upstream}^{commit}"])?;
+    let upstream = upstream.trim_end().to_owned();
+    let upstream_ref = git(root, &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"])?;
+    let range = format!("{upstream}..HEAD");
+    let commits = git(root, &["rev-list", "--reverse", "--topo-order", &range, "--"])?
+        .lines().map(str::to_owned).collect();
+    Ok(RebasePreview { upstream, upstream_ref: upstream_ref.trim_end().into(), commits })
+}
+
+fn check_soft_reset(root: &Path, hash: &str, branch: &str, head: &str) -> Result<(), String> {
+    validate_commit_hash(hash)?;
+    let current_branch = git(root, &["symbolic-ref", "--quiet", "HEAD"])
+        .map_err(|_| "Check out a branch before resetting.")?;
+    let current_head = git(root, &["rev-parse", "--verify", "HEAD"])?;
+    if current_branch.trim_end().strip_prefix("refs/heads/") != Some(branch)
+        || current_head.trim_end() != head
+    {
+        return Err("The current branch or HEAD changed. Refresh and try again.".into());
+    }
+    let ancestry = run(root, &["merge-base", "--is-ancestor", hash, head])?;
+    if hash == head || ancestry.status.code() == Some(1) {
+        return Err("Soft reset requires an earlier commit in the current branch’s history.".into());
+    }
+    output(ancestry, false)?;
+    Ok(())
+}
+
 fn perform(root: Option<String>, action: Action) -> Result<Response, String> {
     let action = match action {
         Action::Open { folder } => return snapshot(Path::new(&folder)).map(Response::Snapshot),
@@ -784,6 +924,12 @@ fn perform(root: Option<String>, action: Action) -> Result<Response, String> {
                 snapshot(root).map(Response::Snapshot)
             }
         }
+        Action::CheckSoftReset { hash, branch, head } => {
+            check_soft_reset(root, &hash, &branch, &head)?;
+            Ok(Response::Unchanged(()))
+        }
+        Action::RebasePreview => rebase_preview(root).map(Response::RebasePreview),
+        Action::ForcePushPlan => force_push_plan(root).map(Response::ForcePushPlan),
         Action::Diff {
             path,
             staged,
@@ -938,6 +1084,9 @@ fn perform(root: Option<String>, action: Action) -> Result<Response, String> {
                 Action::Pull => {
                     git(root, &["pull", "--ff-only"])?;
                 }
+                Action::SaveHttpsCredential { remote, username, token } => {
+                    save_https_credential(root, &remote, &username, &token)?;
+                }
                 Action::SetOrigin { url } => {
                     let url = url.trim();
                     if url.is_empty() || url.starts_with('-') || url.chars().any(char::is_control) {
@@ -949,6 +1098,14 @@ fn perform(root: Option<String>, action: Action) -> Result<Response, String> {
                     } else {
                         git(root, &["remote", "add", "origin", url])?;
                     }
+                }
+                Action::ForcePush { plan } => {
+                    if force_push_plan(root)? != plan || plan.removed == 0 {
+                        return Err("The branch or its upstream changed. Review the force push again.".into());
+                    }
+                    let lease = format!("--force-with-lease={}:{}", plan.destination, plan.expected);
+                    let refspec = format!("{}:{}", plan.head, plan.destination);
+                    git(root, &["push", &lease, "--", &plan.remote, &refspec])?;
                 }
                 Action::Push => {
                     git(root, &["push"])?;
@@ -1064,20 +1221,36 @@ fn perform(root: Option<String>, action: Action) -> Result<Response, String> {
                     git(root, &args)?;
                 }
                 Action::ResetSoft { hash, branch, head } => {
-                    if !matches!(hash.len(), 40 | 64)
-                        || !hash.bytes().all(|b| b.is_ascii_hexdigit())
-                    {
-                        return Err("Invalid commit hash.".into());
-                    }
-                    let current_branch = git(root, &["symbolic-ref", "--quiet", "--short", "HEAD"])
-                        .map_err(|_| "Check out a branch before resetting.")?;
-                    let current_head = git(root, &["rev-parse", "--verify", "HEAD"])?;
-                    if current_branch.trim_end() != branch || current_head.trim_end() != head {
-                        return Err(
-                            "The current branch or HEAD changed. Refresh and try again.".into()
-                        );
-                    }
+                    check_soft_reset(root, &hash, &branch, &head)?;
                     git(root, &["reset", "--soft", &hash, "--"])?;
+                }
+                Action::RebaseUpstream { branch, head, upstream } => {
+                    let current = git(root, &["symbolic-ref", "--quiet", "HEAD"])?;
+                    let tip = git(root, &["rev-parse", "--verify", "HEAD"])?;
+                    if current.trim_end().strip_prefix("refs/heads/") != Some(&branch)
+                        || tip.trim_end() != head
+                    {
+                        return Err("The branch changed. Review the rebase again.".into());
+                    }
+                    if git(root, &["rev-parse", "--verify", "@{upstream}^{commit}"])?.trim_end() != upstream {
+                        return Err("The upstream changed. Review the rebase again.".into());
+                    }
+                    if !working_changes(root)?.is_empty() {
+                        return Err("Commit or stash your changes before rebasing.".into());
+                    }
+                    git(root, &["rebase", "--no-autostash", "--no-update-refs", "--rebase-merges", &upstream])?;
+                }
+                Action::ContinueRebase => {
+                    if !rebase_in_progress(root)? {
+                        return Err("No rebase is in progress.".into());
+                    }
+                    git(root, &["rebase", "--continue"])?;
+                }
+                Action::AbortRebase => {
+                    if !rebase_in_progress(root)? {
+                        return Err("No rebase is in progress.".into());
+                    }
+                    git(root, &["rebase", "--abort"])?;
                 }
                 Action::ContinueCherryPick => {
                     git(root, &["cherry-pick", "--continue"])?;
@@ -1137,7 +1310,8 @@ fn main() {
             install_command_line_tools,
             updates::check_for_updates,
             updates::open_release_page,
-            updates::open_related_project
+            updates::open_related_project,
+            updates::open_token_setup
         ])
         .run(tauri::generate_context!())
         .expect("Natalie could not start");
@@ -1175,6 +1349,136 @@ mod tests {
         git(folder, &["config", "commit.gpgsign", "false"]).unwrap();
         git(folder, &["config", "core.hooksPath", "/dev/null"]).unwrap();
         repository
+    }
+
+    #[test]
+    fn rebase_upstream_can_abort_or_continue_after_a_conflict() {
+        let repository = test_repository();
+        let folder = &repository.0;
+        let file = folder.join("conflict.txt");
+        let commit = |content: &str| {
+            std::fs::write(&file, content).unwrap();
+            git(folder, &["add", "--", "conflict.txt"]).unwrap();
+            git(folder, &["commit", "-m", content]).unwrap();
+        };
+        commit("base");
+        git(folder, &["branch", "upstream"]).unwrap();
+        commit("local");
+        let local = git(folder, &["rev-parse", "HEAD"]).unwrap().trim().to_owned();
+        git(folder, &["switch", "upstream"]).unwrap();
+        commit("remote");
+        git(folder, &["switch", "main"]).unwrap();
+        git(folder, &["branch", "--set-upstream-to=upstream"]).unwrap();
+        let root = Some(folder.to_string_lossy().into_owned());
+        let upstream = rebase_preview(folder).unwrap().upstream;
+        let start = || perform(root.clone(), Action::RebaseUpstream {
+            branch: "main".into(), head: local.clone(), upstream: upstream.clone(),
+        });
+        assert!(start().is_err());
+        assert!(snapshot(folder).unwrap().rebasing);
+        perform(root.clone(), Action::AbortRebase).unwrap();
+        assert_eq!(snapshot(folder).unwrap().head.as_deref(), Some(local.as_str()));
+        assert!(start().is_err());
+        std::fs::write(&file, "resolved").unwrap();
+        git(folder, &["add", "--", "conflict.txt"]).unwrap();
+        let Response::Snapshot(rebased) = perform(root, Action::ContinueRebase).unwrap() else {
+            panic!("Expected rebased repository");
+        };
+        assert!(!rebased.rebasing);
+        assert_eq!(rebased.ahead, Some(1));
+        assert_eq!(rebased.behind, Some(0));
+    }
+
+    #[test]
+    fn force_push_rejects_remote_changes_until_a_new_lease_is_reviewed() {
+        let upstream = test_repository();
+        let local = test_repository();
+        let remote = &upstream.0;
+        let folder = &local.0;
+        git(remote, &["config", "receive.denyCurrentBranch", "ignore"]).unwrap();
+        git(remote, &["commit", "--allow-empty", "-m", "Base"]).unwrap();
+        git(remote, &["commit", "--allow-empty", "-m", "Remote tip"]).unwrap();
+        git(folder, &["remote", "add", "origin", remote.to_str().unwrap()]).unwrap();
+        git(folder, &["fetch", "origin"]).unwrap();
+        git(folder, &["checkout", "-B", "main", "--track", "origin/main"]).unwrap();
+        git(folder, &["reset", "--soft", "HEAD^"]).unwrap();
+
+        let stale = force_push_plan(folder).unwrap();
+        assert_eq!(stale.removed, 1);
+        git(remote, &["commit", "--allow-empty", "-m", "New remote commit"]).unwrap();
+        let root = Some(folder.to_string_lossy().into_owned());
+        let error = perform(root.clone(), Action::ForcePush { plan: stale }).err().unwrap();
+        assert!(error.contains("stale info"), "{error}");
+
+        git(folder, &["fetch", "origin"]).unwrap();
+        let plan = force_push_plan(folder).unwrap();
+        assert_eq!(plan.removed, 2);
+        perform(root, Action::ForcePush { plan }).unwrap();
+        assert_eq!(
+            git(folder, &["rev-parse", "HEAD"]).unwrap(),
+            git(remote, &["rev-parse", "HEAD"]).unwrap(),
+        );
+    }
+
+    #[test]
+    fn discard_all_after_soft_reset_restores_file_replaced_by_directory() {
+        let repository = test_repository();
+        let folder = &repository.0;
+        let path = folder.join("item");
+        std::fs::write(&path, "original file").unwrap();
+        git(folder, &["add", "--", "item"]).unwrap();
+        git(folder, &["commit", "-m", "Add file"]).unwrap();
+        let before = snapshot(folder).unwrap();
+
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        std::fs::write(path.join("child"), "replacement").unwrap();
+        git(folder, &["add", "-A"]).unwrap();
+        git(folder, &["commit", "-m", "Replace file with directory"]).unwrap();
+        let committed = snapshot(folder).unwrap();
+
+        let Response::Snapshot(reset) = perform(
+            Some(committed.root.clone()),
+            Action::ResetSoft {
+                hash: before.head.unwrap(),
+                branch: committed.branch,
+                head: committed.head.unwrap(),
+            },
+        ).unwrap() else {
+            panic!("Expected soft-reset snapshot");
+        };
+        let forward = git(folder, &["rev-parse", "ORIG_HEAD"]).unwrap();
+        assert!(check_soft_reset(
+            folder, forward.trim(), &reset.branch, reset.head.as_deref().unwrap(),
+        ).is_err());
+        let paths = reset.changes.into_iter().map(|change| change.path).collect();
+        let Response::Snapshot(discarded) =
+            perform(Some(reset.root), Action::DiscardMany { paths }).unwrap()
+        else {
+            panic!("Expected discard snapshot");
+        };
+        assert!(discarded.changes.is_empty());
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "original file");
+    }
+
+    #[test]
+    fn credential_urls_are_https_and_repository_scoped() {
+        for url in [
+            "https://github.com/owner/repo.git",
+            "https://gitlab.example.com:8443/group/project.git",
+            "https://dev.azure.com/org/project/_git/repo",
+        ] {
+            assert!(https_credential_url(url).is_ok());
+        }
+        for url in [
+            "http://example.com/repo.git",
+            "git@example.com:repo.git",
+            "https://example.com/",
+            "https://name:secret@example.com/repo.git",
+            "https://example.com/repo.git?query",
+        ] {
+            assert!(https_credential_url(url).is_err());
+        }
     }
 
     #[test]

@@ -17,6 +17,10 @@ The build is signed ad hoc and has no Apple notarization. If macOS blocks the fi
 - Use **Fetch** to update remote branches. History uses dashed lines and an **Incoming** label for commits that a local branch can pull from its upstream, even when another branch is checked out.
 - Use **Repositories** to reopen a recent working tree or **Clone** to clone an HTTPS or SSH Git URL. Clone uses the credentials configured for Git and does not open a terminal credential prompt.
 
+## HTTPS credentials
+
+Open **Credentials** in the Git toolbar, select a remote, and enter the username and access token required by your Git provider. Natalie stores the token in macOS Keychain for that remote’s HTTPS push URL and configures Git to match the repository path. A fetch URL that matches the push URL can use the same credential.
+
 ## Run from source
 
 Install Node.js and Rust on macOS, then run:

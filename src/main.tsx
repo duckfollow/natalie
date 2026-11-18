@@ -127,6 +127,8 @@ function CommitGraphRow({
   incomingForPull = false,
   incomingBranches = [],
   pullPreviewBranch,
+  syncedHashes,
+  pulling,
   isHead,
 }: {
   row: ReturnType<typeof layoutHistory>["rows"][number];
@@ -138,6 +140,8 @@ function CommitGraphRow({
   incomingForPull?: boolean;
   incomingBranches?: string[];
   pullPreviewBranch?: string;
+  syncedHashes?: ReadonlySet<string>;
+  pulling?: boolean;
   isHead: boolean;
   theme: "light" | "dark";
 }) {
@@ -183,6 +187,8 @@ function CommitGraphRow({
               d={path}
               stroke={colors[edge.color % colors.length]}
               className={edge.incoming ? "commit-edge-incoming" : undefined}
+              data-pulling={pulling && edge.incomingForPull ? true : undefined}
+              data-syncing={!edge.dashed && edge.sourceHash && syncedHashes?.has(edge.sourceHash) ? true : undefined}
               data-incoming-for-pull={edge.incomingForPull || undefined}
               data-branch-pull-preview={pullPreviewBranch && edge.incomingBranches?.includes(pullPreviewBranch) ? true : undefined}
               opacity={compact ? 0.7 : undefined}
@@ -884,6 +890,13 @@ function App() {
     return () => window.clearTimeout(timer);
   }, [notice]);
   const [error, setError] = useState("");
+  const [pullingRoot, setPullingRoot] = useState<string | null>(null);
+  const [graphSync, setGraphSync] = useState<{ root: string; hashes: Set<string> } | null>(null);
+  useEffect(() => {
+    if (!graphSync) return;
+    const timer = window.setTimeout(() => setGraphSync(null), 900);
+    return () => window.clearTimeout(timer);
+  }, [graphSync]);
   const [busy, setBusy] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const refreshButton = useRef<HTMLButtonElement>(null);
@@ -966,6 +979,10 @@ function App() {
   const jumpNeedsPage = view === "history" && historyTarget != null
     && repo?.branches.some(({ hash }) => hash === historyTarget.hash)
     && !commits?.some(({ hash }) => hash === historyTarget.hash);
+  const locatingCommit = view === "history" && historyTarget != null
+    && (Boolean(remoteHash && !loadedHistory)
+      || (jumpNeedsPage && canLoadOlder && !older?.error));
+
 
   useEffect(() => {
     if (view === "changes" || !root || !firstPage || !commits?.length || !canLoadOlder || older?.error || older?.loading) return;
@@ -1177,7 +1194,19 @@ function App() {
     animateRefreshIcon(refreshButton.current);
     setRefreshing(true);
     try {
-      await update(() => repository<Snapshot>(null, { kind: "open", folder: root }));
+      await update(async () => {
+        try {
+          return await repository<Snapshot>(root, { kind: "fetch" });
+        } catch (failure) {
+          // Keep showing local changes when the remote is unavailable.
+          const next = await repository<Snapshot>(null, {
+            kind: "open",
+            folder: root,
+          }).catch(() => null);
+          if (next) setRepo(next);
+          throw failure;
+        }
+      });
     } finally {
       setRefreshing(false);
     }
@@ -1189,8 +1218,10 @@ function App() {
     showChangesOnFailure = false,
     stagedCommit?: Commit,
   ) {
+    const isPull = "kind" in action && action.kind === "pull";
     void update(
       async () => {
+        if (isPull) setPullingRoot(root);
         try {
           return await repository<Snapshot>(root, action);
         } catch (failure) {
@@ -1208,12 +1239,28 @@ function App() {
             // Preserve the original Git error.
           }
           throw failure;
+        } finally {
+          if (isPull) setPullingRoot(null);
         }
       },
       (next) => {
-        setSelection(null);
+        if (repo?.root === next.root && "kind" in action && (action.kind === "pull" || action.kind === "push")) {
+          const pendingHashes = new Set(graphCommits.filter((commit) =>
+            action.kind === "pull" ? commit.incoming : commit.local_only,
+          ).map(({ hash }) => hash));
+          const hashes = new Set(next.commits.filter((commit) =>
+            pendingHashes.has(commit.hash) && !commit.local_only && !commit.incoming,
+          ).map(({ hash }) => hash));
+          setGraphSync(hashes.size ? { root: next.root, hashes } : null);
+        }
         if ("kind" in action && (action.kind === "checkout_remote" || action.kind === "checkout_branch" || action.kind === "checkout_commit")) {
           setHistoryBranch(null);
+          setView("history");
+          setHistoryListVisible(true);
+          setHistoryScroll(next.head ? { hash: next.head } : null);
+          setSelection(next.head ? { kind: "show", hash: next.head } : null);
+        } else {
+          setSelection(null);
         }
         if (stagedCommit) {
           const subject = stagedCommit.subject || stagedCommit.hash.slice(0, 7);
@@ -1580,7 +1627,7 @@ function App() {
             <button
               ref={refreshButton}
               className="header-secondary header-refresh"
-              title="Refresh repository"
+              title="Refresh repository and fetch remote commits"
               aria-label="Refresh repository"
               aria-disabled={busy}
               onClick={refreshRepository}
@@ -1866,7 +1913,14 @@ function App() {
                   ? "Commit history"
                   : "Search commits"}
               {!graphOnly && view !== "changes" && (
-                <span className="history-count" title="Loaded commits">{commits?.length ?? 0}</span>
+                <span className="history-count" title={locatingCommit ? "Finding branch commit…" : "Loaded commits"}>
+                  {locatingCommit && (
+                    <span role="status" aria-label="Finding branch commit">
+                      <LoaderCircle size={11} className="spin" aria-hidden="true" />
+                    </span>
+                  )}
+                  {commits?.length ?? 0}
+                </span>
               )}
             </h2>
             {view === "history" && !graphOnly && (
@@ -2011,6 +2065,8 @@ function App() {
                           incomingForPull={commit.incoming_for_pull}
                           incomingBranches={commit.incoming_branches}
                           pullPreviewBranch={pullPreview?.root === root ? pullPreview?.branch : undefined}
+                          pulling={pullingRoot === repo.root}
+                          syncedHashes={graphSync?.root === repo.root ? graphSync.hashes : undefined}
                           isHead={commit.hash === repo.head}
                           author={commit.author}
                           theme={theme}

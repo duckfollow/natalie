@@ -11,13 +11,14 @@ export type Commit = {
   incoming_branches: string[];
 };
 
-type Lane = { hash: string; color: number; dashed?: boolean; incoming?: boolean; incomingForPull?: boolean; incomingBranches?: string[] };
+type Lane = { hash: string; sourceHash?: string; color: number; dashed?: boolean; incoming?: boolean; incomingForPull?: boolean; incomingBranches?: string[] };
 type Edge = {
   from: number;
   to: number;
   color: number;
   part: "top" | "bottom";
   merge?: boolean;
+  sourceHash?: string;
   dashed?: boolean;
   incoming?: boolean;
   incomingForPull?: boolean;
@@ -42,7 +43,7 @@ export function layoutHistory(commits: Commit[]) {
     const edges: Edge[] = [];
     for (const [from, lane] of lanes.entries()) {
       if (from !== index || entering) {
-        edges.push({ from, to: from, color: lane.color, dashed: lane.dashed, incoming: lane.incoming, incomingForPull: lane.incomingForPull, incomingBranches: lane.incomingBranches, part: "top" });
+        edges.push({ from, to: from, color: lane.color, dashed: lane.dashed, sourceHash: lane.sourceHash, incoming: lane.incoming, incomingForPull: lane.incomingForPull, incomingBranches: lane.incomingBranches, part: "top" });
       }
     }
     const isMerge = commit.parents.length > 1;
@@ -52,6 +53,7 @@ export function layoutHistory(commits: Commit[]) {
       if (next.some((lane) => lane.hash === hash)) return;
       const lane = {
         hash,
+        sourceHash: commit.hash,
         dashed,
         incoming: commit.incoming,
         incomingForPull: commit.incoming_for_pull,
@@ -64,7 +66,7 @@ export function layoutHistory(commits: Commit[]) {
     for (const [from, lane] of lanes.entries()) {
       if (from === index) continue;
       const to = next.indexOf(lane);
-      edges.push({ from, to, color: lane.color, dashed: lane.dashed, incoming: lane.incoming, incomingForPull: lane.incomingForPull, incomingBranches: lane.incomingBranches, part: "bottom" });
+      edges.push({ from, to, color: lane.color, dashed: lane.dashed, sourceHash: lane.sourceHash, incoming: lane.incoming, incomingForPull: lane.incomingForPull, incomingBranches: lane.incomingBranches, part: "bottom" });
     }
     for (const hash of parents) {
       const to = next.findIndex((lane) => lane.hash === hash);
@@ -74,6 +76,7 @@ export function layoutHistory(commits: Commit[]) {
         color: next[to].color,
         part: "bottom",
         merge: isMerge,
+        sourceHash: commit.hash,
         dashed,
         incoming: commit.incoming,
         incomingForPull: commit.incoming_for_pull,

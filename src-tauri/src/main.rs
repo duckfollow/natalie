@@ -1280,16 +1280,22 @@ mod tests {
         git(folder, &["fetch", "origin"]).unwrap();
         git(folder, &["checkout", "-B", "main", "--track", "origin/main"]).unwrap();
         commit(&remote.0, "First incoming");
-        commit(&remote.0, "Second incoming");
-        assert_eq!(snapshot(folder).unwrap().commits.len(), 1);
-
         git(folder, &["fetch", "origin"]).unwrap();
-        let preview = snapshot(folder).unwrap();
-        assert_eq!(preview.behind, Some(2));
-        assert_eq!(preview.commits.iter().filter(|commit| commit.incoming_for_pull).count(), 2);
+        commit(&remote.0, "Second incoming");
+        commit(&remote.0, "Third incoming");
+        assert_eq!(snapshot(folder).unwrap().behind, Some(1));
+
+        let Response::Snapshot(preview) = perform(
+            Some(folder.to_string_lossy().into_owned()),
+            Action::Fetch,
+        ).unwrap() else {
+            panic!("Expected repository snapshot");
+        };
+        assert_eq!(preview.behind, Some(3));
+        assert_eq!(preview.commits.iter().filter(|commit| commit.incoming_for_pull).count(), 3);
         assert_eq!(
             preview.head.as_deref(),
-            Some(preview.commits[2].hash.as_str())
+            Some(preview.commits[3].hash.as_str())
         );
         assert_eq!(
             preview
@@ -1298,6 +1304,7 @@ mod tests {
                 .map(|commit| (commit.subject.as_str(), commit.incoming))
                 .collect::<Vec<_>>(),
             [
+                ("Third incoming", true),
                 ("Second incoming", true),
                 ("First incoming", true),
                 ("Shared base", false),
@@ -1317,11 +1324,11 @@ mod tests {
             other.branches.iter().map(|branch| (
                 branch.reference.name.as_str(), branch.ahead, branch.behind
             )).collect::<Vec<_>>(),
-            [("ahead", Some(1), Some(0)), ("main", Some(0), Some(2)), ("other", None, None)]
+            [("ahead", Some(1), Some(0)), ("main", Some(0), Some(3)), ("other", None, None)]
         );
         assert_eq!(
             other.commits.iter().filter(|commit| commit.incoming).count(),
-            2
+            3
         );
         git(folder, &["checkout", "main"]).unwrap();
         git(folder, &["pull", "--ff-only"]).unwrap();

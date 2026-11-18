@@ -403,6 +403,9 @@ nav span,
   gap: 8px;
 }
 .history-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   margin-inline-start: auto;
   padding: 2px 6px;
   border-radius: 999px;
@@ -410,6 +413,9 @@ nav span,
   color: var(--muted);
   font-size: 10px;
   font-weight: 500;
+}
+.history-count [role="status"] {
+  display: inline-flex;
 }
 .commit-dot-incoming,
 .commit-edge-incoming {
@@ -2535,4 +2541,24 @@ button.image-preview-canvas:hover:not(:disabled) {
   height: auto;
   min-width: 0;
   padding: 4px 8px;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .commit-graph path[data-syncing] {
+    animation: commit-edge-sync 850ms ease-out both;
+  }
+}
+@keyframes commit-edge-sync {
+  from { stroke-dasharray: 4px 3px; }
+  to { stroke-dasharray: 4px 0px; }
+}
+
+
+@media (prefers-reduced-motion: no-preference) {
+  .commit-graph path[data-pulling] {
+    animation: commit-edge-pull 550ms linear infinite;
+  }
+}
+@keyframes commit-edge-pull {
+  to { stroke-dashoffset: -7px; }
 }

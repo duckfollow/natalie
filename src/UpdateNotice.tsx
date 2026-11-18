@@ -19,15 +19,6 @@ interface AvailableUpdate {
   notes: string;
 }
 const DAY = 24 * 60 * 60 * 1000;
-const CHECKED_KEY = "natalie.updates.last-attempt";
-function lastAttempt(): number {
-  try {
-    const value = Number(localStorage.getItem(CHECKED_KEY));
-    return Number.isFinite(value) ? value : 0;
-  } catch {
-    return 0;
-  }
-}
 export function UpdateNotice() {
   const [version, setVersion] = useState(buildVersion);
   const [update, setUpdate] = useState<AvailableUpdate | null>(null);
@@ -38,21 +29,18 @@ export function UpdateNotice() {
   const [visible, setVisible] = useState(false);
   const dialog = useRef<HTMLDialogElement>(null);
   const running = useRef(false);
-  const attempted = useRef(lastAttempt());
+  const attempted = useRef<number | null>(null);
   const mounted = useRef(true);
   const check = useCallback(async (manual: boolean) => {
     if (!desktop || running.current) return;
-    const elapsed = Date.now() - attempted.current;
-    if (!manual && elapsed >= 0 && elapsed < DAY) return;
+    if (!manual && attempted.current !== null) {
+      const elapsed = Date.now() - attempted.current;
+      if (elapsed >= 0 && elapsed < DAY) return;
+    }
     running.current = true;
     setChecking(true);
     setError("");
     attempted.current = Date.now();
-    try {
-      localStorage.setItem(CHECKED_KEY, String(attempted.current));
-    } catch {
-      /* The check still works without local storage. */
-    }
     try {
       const available = await api<AvailableUpdate | null>("check_for_updates");
       if (!mounted.current) return;
@@ -137,7 +125,7 @@ export function UpdateNotice() {
         {update && (
           <span
             className="update-new-badge"
-            aria-label={`Version ${update.version} available`}
+            aria-hidden="true"
           >
             New
           </span>

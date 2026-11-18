@@ -21,8 +21,13 @@
   font-size: 10px;
 }
 .update-new-badge {
-  color: var(--accent);
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: var(--accent);
+  color: var(--primary-text);
   font-size: 10px;
+  font-weight: 700;
+  line-height: 1.2;
 }
 .updates-dialog {
   width: min(580px, calc(100vw - 32px));

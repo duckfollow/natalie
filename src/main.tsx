@@ -2064,6 +2064,8 @@ function App() {
                     <CommitGenerateButton
                       disabled={busy || generatedMessage.working || repo.rebasing || conflicts.length > 0 || !staged.length}
                       working={generatedMessage.working} ready={generatedMessage.aiReady}
+                      useModel={generatedMessage.useModel} onGenerator={generatedMessage.setUseModel}
+                      modelId={generatedMessage.modelId} onModel={generatedMessage.setModelId}
                       detail={generatedMessage.detail} onDetail={generatedMessage.setDetail}
                       onGenerate={() => void generatedMessage.generate()} />
                   </div>

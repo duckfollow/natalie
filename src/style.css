@@ -3091,3 +3091,69 @@ button.image-preview-canvas:hover:not(:disabled) {
   padding: 7px;
   background: var(--panel);
 }
+
+.commit-format-menu {
+  min-width: 205px;
+}
+.commit-menu-heading {
+  padding: 5px 8px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 600;
+}
+.commit-generator-group {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--line);
+}
+.commit-generator-choice {
+  display: grid;
+  gap: 2px;
+}
+.commit-generator-choice small {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 400;
+}
+
+.commit-format-menu {
+  max-height: min(360px, 65vh);
+  overflow-y: auto;
+}
+
+.commit-settings-reveal {
+  flex: none;
+  width: 0;
+  overflow: hidden;
+  opacity: 0;
+}
+.commit-form .commit-settings-trigger {
+  display: grid;
+  place-items: center;
+  min-width: 0;
+  width: 100%;
+  height: 29px;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  border-radius: 0 6px 6px 0;
+  background: transparent;
+  color: var(--muted);
+}
+.commit-settings-trigger svg {
+  margin-inline: 6px;
+}
+.commit-hold-control[data-settings-visible="true"] .commit-settings-reveal,
+.commit-hold-control:focus-within .commit-settings-reveal {
+  width: 27px;
+  opacity: 1;
+}
+.commit-form .commit-settings-trigger:hover:not(:disabled) {
+  color: var(--accent);
+  background: var(--active);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .commit-settings-reveal {
+    transition: width 180ms ease-out, opacity 160ms ease;
+  }
+}

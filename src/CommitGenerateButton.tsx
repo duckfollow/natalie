@@ -1,4 +1,5 @@
-import { AlignLeft, Bot, Check, ListChecks, LoaderCircle, ScanText } from "lucide-react";
+import { commitModels, commitModel, type CommitModelId } from "./commit-models";
+import { AlignLeft, Bot, Check, ListChecks, LoaderCircle, ScanText, Settings2, SlidersHorizontal } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import type { MessageDetail } from "./commit-message";
 
@@ -8,15 +9,21 @@ const options = [
   { value: "analysis", label: "Analysis", Icon: ScanText },
 ] as const;
 
-export function CommitGenerateButton({ disabled, working, ready, detail, onDetail, onGenerate }: {
+export function CommitGenerateButton({ disabled, working, ready, detail, useModel, modelId, onModel, onGenerator, onDetail, onGenerate }: {
   disabled: boolean;
   working: boolean;
   ready: boolean | null;
   detail: MessageDetail;
+  useModel: boolean;
+  modelId: CommitModelId;
+  onModel: (id: CommitModelId) => void;
+  onGenerator: (useAI: boolean) => void;
   onDetail: (detail: MessageDetail) => void;
   onGenerate: () => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const hoverTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const container = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -27,7 +34,10 @@ export function CommitGenerateButton({ disabled, working, ready, detail, onDetai
     clearTimeout(timer.current);
     start.current = null;
   }
-  useEffect(() => () => clearTimeout(timer.current), []);
+  useEffect(() => () => {
+    clearTimeout(timer.current);
+    clearTimeout(hoverTimer.current);
+  }, []);
   useEffect(() => {
     if (!open) return;
     container.current?.querySelector<HTMLButtonElement>('[aria-checked="true"]')?.focus();
@@ -46,12 +56,21 @@ export function CommitGenerateButton({ disabled, working, ready, detail, onDetai
   }
   return (
     <div className="commit-generator-actions commit-hold-control" ref={container}
+      data-settings-visible={showSettings || open}
+      onMouseEnter={() => {
+        clearTimeout(hoverTimer.current);
+        hoverTimer.current = setTimeout(() => setShowSettings(true), 1500);
+      }}
+      onMouseLeave={() => {
+        clearTimeout(hoverTimer.current);
+        setShowSettings(false);
+      }}
       onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false); }}>
       <button ref={trigger} type="button" className="commit-message-generate"
         disabled={disabled} aria-busy={working} aria-haspopup="menu" aria-expanded={open}
         aria-controls={open ? id : undefined}
-        aria-label={working ? "Generating commit message" : `Generate commit message · ${detail}. Hold to choose format.`}
-        title={`Generate message · ${detail} · Hold or right-click to choose format`}
+        aria-label={working ? "Generating commit message" : `Generate commit message · ${detail} · ${useModel ? commitModel(modelId).label : "Rules"}. Hold to choose options.`}
+        title={`Generate message · ${detail} · ${useModel ? commitModel(modelId).label : "Rules"} · Hold or right-click for options`}
         onPointerDown={(event) => {
           if (event.button !== 0) return;
           clearHold();
@@ -77,12 +96,20 @@ export function CommitGenerateButton({ disabled, working, ready, detail, onDetai
           } else if (event.key === "Enter" || event.key === " ") held.current = false;
         }}>
         {working ? <LoaderCircle size={13} className="spin" aria-hidden="true" /> : (
-          <span className="commit-ai-status" data-ready={ready ?? undefined} role="img"
-            aria-label={ready === null ? "AI loads on first generation" : ready ? "AI ready" : "AI failed"} />
+          <span className="commit-ai-status" data-ready={useModel ? ready ?? undefined : true} role="img"
+            aria-label={!useModel ? "Rules ready" : ready === null ? "AI loads on first generation" : ready ? "AI ready" : "AI failed"} />
         )}
         <Bot size={16} aria-hidden="true" />
       </button>
-      {open && <div id={id} role="menu" aria-label="Message format" className="commit-format-menu"
+      <div className="commit-settings-reveal">
+        <button type="button" className="commit-settings-trigger" disabled={working}
+          aria-label="Commit message settings" title="Commit message settings"
+          aria-haspopup="menu" aria-expanded={open} aria-controls={open ? id : undefined}
+          onClick={() => { held.current = true; setOpen(current => !current); }}>
+          <Settings2 size={14} aria-hidden="true" />
+        </button>
+      </div>
+      {open && <div id={id} role="menu" aria-label="Commit message options" className="commit-format-menu"
         onKeyDown={(event) => {
           if (event.key === "Escape") { event.preventDefault(); close(); }
           if (event.key === "ArrowDown" || event.key === "ArrowUp" || event.key === "Home" || event.key === "End") {
@@ -94,6 +121,8 @@ export function CommitGenerateButton({ disabled, working, ready, detail, onDetai
             items[index]?.focus();
           }
         }}>
+        <div role="group" aria-label="Message format">
+          <div className="commit-menu-heading" aria-hidden="true">Message format</div>
         {options.map(({ value, label, Icon }) => (
           <button type="button" role="menuitemradio" aria-checked={detail === value} key={value}
             onMouseDown={(event) => event.preventDefault()}
@@ -102,6 +131,25 @@ export function CommitGenerateButton({ disabled, working, ready, detail, onDetai
             {detail === value && <Check size={14} aria-hidden="true" />}
           </button>
         ))}
+        </div>
+        <div role="group" aria-label="Generator" className="commit-generator-group">
+          <div className="commit-menu-heading" aria-hidden="true">Generator</div>
+          <button type="button" role="menuitemradio" aria-checked={!useModel}
+            onMouseDown={(event) => event.preventDefault()} onClick={() => { onGenerator(false); close(); }}>
+            <SlidersHorizontal size={14} aria-hidden="true" />
+            <span className="commit-generator-choice"><span>Rules</span><small>Instant · offline</small></span>
+            {!useModel && <Check size={14} aria-hidden="true" />}
+          </button>
+          {commitModels.map(model => (
+            <button type="button" role="menuitemradio" aria-checked={useModel && modelId === model.id} key={model.id}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => { onModel(model.id); close(); }}>
+              <Bot size={14} aria-hidden="true" />
+              <span className="commit-generator-choice"><span>{model.label}</span><small>{model.description}</small></span>
+              {useModel && modelId === model.id && <Check size={14} aria-hidden="true" />}
+            </button>
+          ))}
+        </div>
       </div>}
     </div>
   );

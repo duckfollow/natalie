@@ -1,3 +1,4 @@
+import { commitModel, type CommitModelId } from "./commit-models";
 import { generateWithLocalModel, ModelResponseError } from "./commit-message-ai";
 import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -11,7 +12,8 @@ export function useGenerateCommitMessage({ root, enabled, message, setMessage }:
 }) {
   const [detail, setDetail] = useState<MessageDetail>("short");
   const detailRef = useRef<MessageDetail>("short");
-  const useModel = true;
+  const [modelId, setModelId] = useState<CommitModelId>("smollm2-135m");
+  const [useModel, setUseModel] = useState(true);
   const [aiReady, setAiReady] = useState<boolean | null>(null);
   const [modelResponse, setModelResponse] = useState("");
   const [status, setStatus] = useState("");
@@ -47,6 +49,21 @@ export function useGenerateCommitMessage({ root, enabled, message, setMessage }:
     return () => { request.current++; controller.current?.abort(); };
   }, [root, enabled]);
 
+  function changeGenerator(useAI: boolean) {
+    if (inFlight.current) return;
+    setUseModel(useAI);
+    setError("");
+    setStatus("");
+    setModelResponse("");
+  }
+
+  function changeModel(id: CommitModelId) {
+    if (inFlight.current) return;
+    if (id !== modelId) setAiReady(null);
+    setModelId(id);
+    changeGenerator(true);
+  }
+
   async function generate() {
     if (!root || !enabled || inFlight.current) return;
     inFlight.current = true;
@@ -70,8 +87,8 @@ export function useGenerateCommitMessage({ root, enabled, message, setMessage }:
               setStatus(text);
               if (text === "Drafting locally…") setAiReady(true);
             }
-          }, abort.signal);
-          source = "Selected locally with SmolLM2 Q4 from staged-diff suggestions.";
+          }, abort.signal, modelId);
+          source = `Selected locally with ${commitModel(modelId).label} from staged-diff suggestions.`;
         } catch (failure) {
           setAiReady(false);
           if (request.current === current && failure instanceof ModelResponseError) setModelResponse(failure.response);
@@ -100,5 +117,5 @@ export function useGenerateCommitMessage({ root, enabled, message, setMessage }:
       if (request.current === current) { inFlight.current = false; setWorking(false); }
     }
   }
-  return { generate, working, error, status, modelResponse, aiReady, detail, setDetail: changeDetail, useModel, truncated: generated?.truncated && message === generated.text };
+  return { generate, working, error, status, modelId, setModelId: changeModel, modelResponse, aiReady, detail, setDetail: changeDetail, useModel, setUseModel: changeGenerator, truncated: generated?.truncated && message === generated.text };
 }

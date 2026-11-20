@@ -54,3 +54,14 @@ test("AI ranking chooses a supplied candidate and rejects invalid logits", async
   assert.throws(() => bestCandidate([]));
   assert.throws(() => bestCandidate([NaN, 1]));
 });
+
+test("model catalog resolves pinned Q4 choices and rejects unknown IDs", async () => {
+  const { commitModels, commitModel } = await import("../src/commit-models.ts");
+  assert.equal(commitModels.length, 2);
+  for (const model of commitModels) {
+    assert.equal(commitModel(model.id), model);
+    assert.match(model.revision, /^[0-9a-f]{40}$/);
+    assert.ok(model.timeout >= 180000);
+  }
+  assert.throws(() => commitModel("../../custom"));
+});

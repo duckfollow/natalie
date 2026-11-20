@@ -1,3 +1,4 @@
+import { commitModel, type CommitModelId } from "./commit-models.ts";
 import { suggestCommitMessages, type CommitMessageContext } from "./commit-message.ts";
 
 export function modelPrompt(context: CommitMessageContext, candidates: readonly string[] = []): string {
@@ -45,13 +46,13 @@ export class ModelResponseError extends Error {
   }
 }
 
-export function generateWithLocalModel(context: CommitMessageContext, progress: (text: string) => void, signal?: AbortSignal): Promise<string> {
+export function generateWithLocalModel(context: CommitMessageContext, progress: (text: string) => void, signal?: AbortSignal, modelId: CommitModelId = "smollm2-135m"): Promise<string> {
   const candidates = suggestCommitMessages(context).messages;
   return new Promise((resolve, reject) => {
     const worker = new Worker(new URL("./commit-message.worker.ts", import.meta.url), { type: "module" });
     const finish = () => { clearTimeout(timeout); worker.terminate(); signal?.removeEventListener("abort", abort); };
     const abort = () => { finish(); reject(Error("Generation cancelled.")); };
-    const timeout = setTimeout(() => { finish(); reject(Error("Local model timed out.")); }, 180_000);
+    const timeout = setTimeout(() => { finish(); reject(Error("Local model timed out.")); }, commitModel(modelId).timeout);
     signal?.addEventListener("abort", abort, { once: true });
     if (signal?.aborted) { abort(); return; }
     worker.onerror = () => { finish(); reject(Error("Local model could not start.")); };
@@ -63,6 +64,6 @@ export function generateWithLocalModel(context: CommitMessageContext, progress: 
       if (title) resolve(title);
       else reject(new ModelResponseError(typeof data.text === "string" ? data.text.slice(0, 800) : "(empty response)"));
     };
-    worker.postMessage({ prompt: modelPrompt(context, candidates), candidates });
+    worker.postMessage({ prompt: modelPrompt(context, candidates), candidates, modelId });
   });
 }

@@ -1,3 +1,4 @@
+import { commitModel, type CommitModelId } from "./commit-models";
 import { bestCandidate } from "./commit-message-ranking";
 import { env, pipeline } from "@huggingface/transformers";
 // Ship the runtime with the app. Only model files are fetched on opt-in.
@@ -8,18 +9,19 @@ env.allowLocalModels = false;
 env.backends.onnx.wasm!.numThreads = 1;
 env.backends.onnx.wasm!.wasmPaths = { wasm: wasmUrl, mjs: moduleUrl };
 
-self.onmessage = async ({ data }: MessageEvent<{ prompt: string; candidates: string[] }>) => {
+self.onmessage = async ({ data }: MessageEvent<{ prompt: string; candidates: string[]; modelId: CommitModelId }>) => {
   let stage = "download";
   try {
-    self.postMessage({ progress: "Loading SmolLM2 Q4…" });
-    const generator = await pipeline("text-generation", "onnx-community/SmolLM2-135M-Instruct-ONNX-MHA", {
+    const model = commitModel(data.modelId);
+    self.postMessage({ progress: `Loading ${model.label}…` });
+    const generator = await pipeline("text-generation", model.repository, {
       progress_callback: (event) => {
         if (event.status === "progress") {
           const percent = Math.round(event.progress);
           self.postMessage({ progress: `Downloading model · ${percent}%` });
         }
       },
-      dtype: "q4", device: "wasm", revision: "5b6682c7c9df18f004bfb7e635cba3f3d98537d8",
+      dtype: "q4", device: "wasm", revision: model.revision,
     });
     stage = "inference";
     self.postMessage({ progress: "Drafting locally…" });

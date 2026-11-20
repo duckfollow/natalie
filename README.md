@@ -1,6 +1,6 @@
 # Natalie
 
-Natalie is a macOS Git client for reviewing diffs, staging changes, creating commits, and browsing a commit graph across local branches.
+Natalie is a macOS Git client for reviewing diffs, staging changes, creating commits, and browsing a commit graph across local branches and recent branches on origin.
 
 ![Natalie showing the commit graph, commit metadata, and a file diff for a sample repository](docs/images/history.png)
 
@@ -14,6 +14,8 @@ The build is signed ad hoc and has no Apple notarization. If macOS blocks the fi
 
 - Choose **Open repo** to open a local working tree. Natalie uses your repository’s Git configuration and commit hooks.
 - Open **History** to browse the commit graph, or use **Search** to find commits by subject, author, hash, or ref. Both views load more commits as you scroll.
+- The main graph also includes the five most recently updated origin branches that have no local counterpart or tracking branch, ordered by the latest commit’s committer date. These origin-only lines are dashed with solid commit dots; history shared with local/tracked branches uses its existing visual state. Remote labels retain the `origin/` prefix. Hover a recent origin branch to see its latest commit author and time.
+- After Fetch/Refresh discovers an additional origin branch, a **New branch** badge appears in the sidebar and graph until you open that branch or its tip commit. These indicators apply to branches discovered during the current app session.
 - Use **Fetch** to update remote branches. History uses dashed lines and an **Incoming** label for commits that a local branch can pull from its upstream, even when another branch is checked out.
 - Use **Repositories** to reopen a recent working tree or **Clone** to clone an HTTPS or SSH Git URL. Clone uses the credentials configured for Git and does not open a terminal credential prompt.
 

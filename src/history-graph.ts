@@ -6,6 +6,7 @@ export type Commit = {
   parents: string[];
   refs: string;
   local_only: boolean;
+  origin_only?: boolean;
   incoming: boolean;
   incoming_for_pull: boolean;
   incoming_branches: string[];
@@ -47,7 +48,7 @@ export function layoutHistory(commits: Commit[]) {
       }
     }
     const isMerge = commit.parents.length > 1;
-    const dashed = commit.local_only || commit.incoming;
+    const dashed = commit.local_only || commit.incoming || !!commit.origin_only;
     const parents = commit.parents.filter((hash) => remaining.has(hash));
     parents.forEach((hash, parentIndex) => {
       if (next.some((lane) => lane.hash === hash)) return;

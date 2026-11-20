@@ -48,6 +48,7 @@ import {
   RepositorySidebar,
   type LocalBranch,
   type Reference,
+  type RecentOriginBranch,
   type WorkspaceView,
 } from "./RepositorySidebar";
 import { RepositoryPicker } from "./RepositoryPicker";
@@ -71,6 +72,7 @@ type Snapshot = {
   tags: Reference[];
   remotes: string[];
   remote_branches: Reference[];
+  recent_origin_branches: RecentOriginBranch[];
   origin_url: string | null;
   stashes: Reference[];
   submodules: string[];
@@ -824,6 +826,26 @@ function App() {
   }, [graphSync]);
   const [busy, setBusy] = useState(false);
   const [pushingHashes, setPushingHashes] = useState<Set<string>>();
+  const seenOriginBranches = useRef(new Map<string, Set<string>>());
+  const [newOriginBranches, setNewOriginBranches] = useState<Record<string, string[]>>({});
+  useEffect(() => {
+    if (!repo) return;
+    const names = new Set(repo.remote_branches.filter((ref) => ref.name.startsWith("origin/")).map((ref) => ref.name));
+    const previous = seenOriginBranches.current.get(repo.root);
+    seenOriginBranches.current.set(repo.root, names);
+    if (!previous) return;
+    const added = [...names].filter((name) => !previous.has(name));
+    if (added.length) setNotice(`Found ${added.length} new ${added.length === 1 ? "branch" : "branches"} on origin.`);
+    setNewOriginBranches((current) => {
+      const before = current[repo.root] ?? [];
+      const next = [...new Set([...before.filter((name) => names.has(name)), ...added])];
+      return next.length === before.length && next.every((name, i) => name === before[i]) ? current : { ...current, [repo.root]: next };
+    });
+  }, [repo]);
+  function acknowledgeOriginBranch(name: string) {
+    if (!repo) return;
+    setNewOriginBranches((current) => ({ ...current, [repo.root]: (current[repo.root] ?? []).filter((branch) => branch !== name) }));
+  }
   const [refreshing, setRefreshing] = useState(false);
   const refreshButton = useRef<HTMLButtonElement>(null);
   const pending = useRef(false);
@@ -1849,6 +1871,7 @@ function App() {
         >
           <RepositorySidebar
             {...repo}
+            newOriginBranches={newOriginBranches[repo.root] ?? []}
             collapsed={!panels.navigation}
             onExpand={toggleSidebar}
             view={view}
@@ -1886,6 +1909,7 @@ function App() {
             }}
             onPullPreview={(branch) => setPullPreview(branch ? { root, branch } : null)}
             onRemoteBranch={(ref) => {
+              acknowledgeOriginBranch(ref.name);
               setHistoryListVisible(true);
               setHistoryScroll({ hash: ref.hash });
               setHistoryBranch(ref.name);
@@ -2105,9 +2129,13 @@ function App() {
                           ? { minWidth: laneX(graph.width - 1) + lanePadding + 122 }
                           : undefined
                       }
-                      onClick={() =>
-                        setSelection({ kind: "show", hash: commit.hash })
-                      }
+                      onClick={() => {
+                        setNewOriginBranches((current) => {
+                          const matching = new Set(repo.remote_branches.filter((ref) => ref.hash === commit.hash).map((ref) => ref.name));
+                          return { ...current, [repo.root]: (current[repo.root] ?? []).filter((name) => !matching.has(name)) };
+                        });
+                        setSelection({ kind: "show", hash: commit.hash });
+                      }}
                     >
                       {view === "history" && (
                         <CommitGraphRow
@@ -2169,6 +2197,7 @@ function App() {
                                 : repo.remote_branches.some(({ name }) => name === ref)
                                   || repo.remotes.some((remote) => ref === `${remote}/HEAD`) ? "remote"
                                 : "local";
+                              const recent = repo.recent_origin_branches.find((branch) => branch.name === ref);
                               const Icon = kind === "tag" ? Tag : kind === "remote" ? Cloud : GitBranch;
                               const label = {
                                 tag: "Tag",
@@ -2177,9 +2206,10 @@ function App() {
                                 local: "Local branch",
                               }[kind];
                               return (
-                                <span className="commit-ref" data-kind={kind} key={ref} title={`${label} · ${ref}`}>
+                                <span className="commit-ref" data-kind={kind} key={ref} title={`${label} · ${ref}${recent ? ` · Latest commit by ${recent.author} · ${new Date(recent.date).toLocaleString()}` : ""}`}>
                                   <Icon size={10} aria-hidden="true" />
                                   <span><span className="commit-ref-kind">{label} </span>{ref}</span>
+                                  {(newOriginBranches[repo.root] ?? []).includes(ref) && <span className="new-origin-branch">New branch</span>}
                                 </span>
                               );
                             })}

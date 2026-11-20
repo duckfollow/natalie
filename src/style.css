@@ -2957,3 +2957,14 @@ button.image-preview-canvas:hover:not(:disabled) {
     flex: none;
   }
 }
+
+.new-origin-branch {
+  flex-shrink: 0;
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: var(--active);
+  color: var(--accent);
+  font-size: 9px;
+  font-weight: 600;
+  white-space: nowrap;
+}

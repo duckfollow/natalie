@@ -23,6 +23,7 @@ import { createPortal } from "react-dom";
 
 export type WorkspaceView = "changes" | "history" | "search";
 export type Reference = { name: string; hash: string };
+export type RecentOriginBranch = Reference & { author: string; date: string };
 export type LocalBranch = Reference & { ahead: number | null; behind: number | null };
 
 function Section({
@@ -69,6 +70,8 @@ export function RepositorySidebar({
   tags,
   remotes,
   remote_branches,
+  recent_origin_branches,
+  newOriginBranches,
   historyBranch,
   onRemoteBranch,
   onPullPreview,
@@ -90,6 +93,8 @@ export function RepositorySidebar({
   tags: Reference[];
   remotes: string[];
   remote_branches: Reference[];
+  recent_origin_branches: RecentOriginBranch[];
+  newOriginBranches: string[];
   historyBranch: string | null;
   onPullPreview: (branch: string | null) => void;
   onRemoteBranch: (ref: Reference) => void;
@@ -167,8 +172,11 @@ export function RepositorySidebar({
   const refButton = (ref: Reference & Partial<LocalBranch>, label = ref.name, current = false, activate = () => onCommit(ref.hash), checkout?: { branch: string; remote?: string; tag?: boolean }) => {
     const behind = ref.behind ?? 0;
     const ahead = ref.ahead ?? 0;
+    const recent = recent_origin_branches.find((branch) => branch.name === ref.name);
     const description = [
       ref.name,
+      recent ? `Latest commit by ${recent.author} · ${new Date(recent.date).toLocaleString()}` : "",
+      newOriginBranches.includes(ref.name) ? "New branch" : "",
       behind > 0 ? `Pull ${behind}` : "",
       ahead > 0 ? `Push ${ahead}` : "",
     ].filter(Boolean).join(" · ");
@@ -195,6 +203,7 @@ export function RepositorySidebar({
       >
         {checkout && !checkout.tag && !checkout.remote && <span className="checked-out-dot" aria-hidden="true" />}
         <span className="repo-reference-name">{label}</span>
+        {newOriginBranches.includes(ref.name) && <span className="new-origin-branch">New branch</span>}
         {(behind > 0 || ahead > 0) && (
           <span className="repo-branch-status" aria-hidden="true">
             {behind > 0 && <span
@@ -303,7 +312,13 @@ export function RepositorySidebar({
                   <Cloud size={14} />
                   <span className="repo-reference-name">{name}</span>
                 </summary>
-                {(remoteGroups.get(name) ?? []).map((ref) => {
+                {[...(remoteGroups.get(name) ?? [])].sort((a, b) => {
+                  const rank = (ref: Reference) => {
+                    const index = recent_origin_branches.findIndex((branch) => branch.name === ref.name);
+                    return index < 0 ? recent_origin_branches.length : index;
+                  };
+                  return rank(a) - rank(b);
+                }).map((ref) => {
                   const label = ref.name.slice(name.length + 1);
                   return refButton(ref, label, ref.name === historyBranch, () => onRemoteBranch(ref), { remote: name, branch: label });
                 })}

@@ -29,6 +29,7 @@ struct Commit {
     parents: Vec<String>,
     refs: String,
     local_only: bool,
+    origin_only: bool,
     incoming: bool,
     incoming_for_pull: bool,
     incoming_branches: Vec<String>,
@@ -38,6 +39,14 @@ struct Commit {
 struct Reference {
     name: String,
     hash: String,
+}
+
+#[derive(Serialize)]
+struct RecentOriginBranch {
+    #[serde(flatten)]
+    reference: Reference,
+    author: String,
+    date: String,
 }
 
 #[derive(Serialize)]
@@ -62,6 +71,7 @@ struct Snapshot {
     tags: Vec<Reference>,
     remotes: Vec<String>,
     remote_branches: Vec<Reference>,
+    recent_origin_branches: Vec<RecentOriginBranch>,
     origin_url: Option<String>,
     stashes: Vec<Reference>,
     submodules: Vec<String>,
@@ -171,6 +181,86 @@ fn local_branches(path: &Path) -> Result<(Vec<LocalBranch>, IncomingCommits), St
     Ok((branches, incoming))
 }
 
+fn origin_branches(path: &Path) -> Result<Vec<RecentOriginBranch>, String> {
+    let refs = git(path, &[
+        "for-each-ref", "--sort=refname", "--sort=-committerdate",
+        "--format=%(refname:strip=2)%00%(objectname)%00%(symref)%00%(authorname)%00%(committerdate:iso-strict)",
+        "refs/remotes/origin/",
+    ])?;
+    Ok(refs
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split('\0');
+            let (Some(name), Some(hash), Some(symref), Some(author), Some(date)) = (
+                fields.next(),
+                fields.next(),
+                fields.next(),
+                fields.next(),
+                fields.next(),
+            ) else {
+                return None;
+            };
+            if !symref.is_empty() {
+                return None;
+            }
+            Some(RecentOriginBranch {
+                reference: Reference {
+                    name: name.into(),
+                    hash: hash.into(),
+                },
+                author: author.into(),
+                date: date.into(),
+            })
+        })
+        .collect())
+}
+
+fn has_local_origin_branch(name: &str, branches: &[LocalBranch]) -> bool {
+    branches.iter().any(|branch| {
+        branch.upstream == format!("refs/remotes/{name}")
+            || Some(branch.reference.name.as_str()) == name.strip_prefix("origin/")
+    })
+}
+
+fn recent_origin_branches(
+    path: &Path,
+    branches: &[LocalBranch],
+) -> Result<Vec<RecentOriginBranch>, String> {
+    Ok(origin_branches(path)?
+        .into_iter()
+        .filter(|branch| !has_local_origin_branch(&branch.reference.name, branches))
+        .take(5)
+        .collect())
+}
+
+fn origin_only_commits(path: &Path, branches: &[LocalBranch]) -> Result<HashSet<String>, String> {
+    let (tracked, untracked): (Vec<_>, Vec<_>) = origin_branches(path)?
+        .into_iter()
+        .partition(|branch| has_local_origin_branch(&branch.reference.name, branches));
+    if untracked.is_empty() {
+        return Ok(HashSet::new());
+    }
+    let mut args = vec!["rev-list".to_owned()];
+    args.extend(
+        untracked
+            .iter()
+            .map(|branch| format!("refs/remotes/{}", branch.reference.name)),
+    );
+    args.extend(["--not".to_owned(), "--branches".to_owned()]);
+    if git(path, &["rev-parse", "--verify", "HEAD"]).is_ok() {
+        args.push("HEAD".into());
+    }
+    // Shared history follows the local/tracked branch's existing visual state.
+    args.extend(
+        tracked
+            .iter()
+            .map(|branch| format!("refs/remotes/{}", branch.reference.name)),
+    );
+    args.push("--".into());
+    let hashes = git(path, &args.iter().map(String::as_str).collect::<Vec<_>>())?;
+    Ok(hashes.lines().map(str::to_owned).collect())
+}
+
 fn branch_history(
     path: &Path,
     branches: &[LocalBranch],
@@ -180,20 +270,31 @@ fn branch_history(
 ) -> Result<Vec<Commit>, String> {
     let mut upstreams: Vec<_> = branches
         .iter()
-        .filter(|branch| branch.behind.unwrap_or(0) > 0 && branch.upstream.starts_with("refs/remotes/"))
+        .filter(|branch| {
+            branch.behind.unwrap_or(0) > 0 && branch.upstream.starts_with("refs/remotes/")
+        })
         .map(|branch| branch.upstream.as_str())
         .collect();
     upstreams.sort_unstable();
     upstreams.dedup();
-    let mut revisions = vec!["--branches", "HEAD"];
+    let recent = recent_origin_branches(path, branches)?;
+    let recent_refs: Vec<_> = recent
+        .iter()
+        .map(|branch| format!("refs/remotes/{}", branch.reference.name))
+        .collect();
+    let mut revisions = vec!["--branches"];
+    if git(path, &["rev-parse", "--verify", "HEAD"]).is_ok() {
+        revisions.push("HEAD");
+    }
     revisions.extend(upstreams);
-    history(path, &revisions, incoming, skip, limit)
+    revisions.extend(recent_refs.iter().map(String::as_str));
+    history(path, &revisions, incoming, branches, skip, limit)
 }
-
 fn history(
     path: &Path,
     revisions: &[&str],
     incoming: &IncomingCommits,
+    branches: &[LocalBranch],
     skip: usize,
     limit: usize,
 ) -> Result<Vec<Commit>, String> {
@@ -217,6 +318,7 @@ fn history(
     local_args.extend(["--not", "--remotes=origin", "--"]);
     let local_hashes = git(path, &local_args)?;
     let local_hashes: std::collections::HashSet<_> = local_hashes.lines().collect();
+    let origin_only = origin_only_commits(path, branches)?;
     let fields: Vec<_> = log.strip_suffix('\0').unwrap_or(&log).split('\0').collect();
     Ok(fields
         .chunks_exact(6)
@@ -228,6 +330,7 @@ fn history(
             parents: record[4].split_whitespace().map(str::to_owned).collect(),
             refs: record[5].to_owned(),
             local_only: local_hashes.contains(record[0]),
+            origin_only: origin_only.contains(record[0]),
             incoming: incoming.all.contains_key(record[0]),
             incoming_for_pull: incoming.for_pull.contains(record[0]),
             incoming_branches: incoming.all.get(record[0]).cloned().unwrap_or_default(),
@@ -306,7 +409,8 @@ fn snapshot(folder: &Path) -> Result<Snapshot, String> {
     let has_upstream = current_branch.is_some_and(|local| !local.upstream.is_empty());
     let ahead = current_branch.and_then(|local| local.ahead);
     let behind = current_branch.and_then(|local| local.behind);
-    let commits = if head.is_some() {
+    let recent_origin_branches = recent_origin_branches(path, &branches)?;
+    let commits = if head.is_some() || !recent_origin_branches.is_empty() {
         branch_history(path, &branches, &incoming, 0, 100)?
     } else {
         Vec::new()
@@ -371,6 +475,7 @@ fn snapshot(folder: &Path) -> Result<Snapshot, String> {
         tags,
         remotes,
         remote_branches,
+        recent_origin_branches,
         origin_url,
         stashes,
         submodules,
@@ -954,7 +1059,7 @@ fn perform(root: Option<String>, action: Action) -> Result<Response, String> {
             let mut page = match hash.as_deref() {
                 Some(hash) => {
                     validate_commit_hash(hash)?;
-                    history(root, &[hash], &Default::default(), offset.saturating_sub(1), 101)?
+                    history(root, &[hash], &Default::default(), &local_branches(root)?.0, offset.saturating_sub(1), 101)?
                 }
                 None => {
                     let (branches, incoming) = local_branches(root)?;
@@ -969,7 +1074,7 @@ fn perform(root: Option<String>, action: Action) -> Result<Response, String> {
         }
         Action::History { hash } => {
             validate_commit_hash(&hash)?;
-            history(root, &[&hash], &Default::default(), 0, 100).map(Response::History)
+            history(root, &[&hash], &Default::default(), &local_branches(root)?.0, 0, 100).map(Response::History)
         }
         Action::Show { hash } => {
             validate_commit_hash(&hash)?;
@@ -1567,6 +1672,196 @@ mod tests {
         std::fs::remove_file(file).unwrap();
         assert_eq!(image_preview(folder, path, false).unwrap().after, None);
         assert!(image_preview(folder, "../outside.png", false).is_err());
+    }
+
+    #[test]
+    fn graph_includes_five_recent_untracked_origin_branches_and_pages_consistently() {
+        let remote = test_repository();
+        let local = test_repository();
+        let path = &local.0;
+        git(&remote.0, &["commit", "--allow-empty", "-m", "Shared base"]).unwrap();
+        let base = git(&remote.0, &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_owned();
+        for number in 1..=9 {
+            let branch = format!("topic/{number}");
+            git(&remote.0, &["checkout", "-B", &branch, &base]).unwrap();
+            let date = format!("2026-11-01T{number:02}:00:00+00:00");
+            let status = Command::new("/usr/bin/git")
+                .current_dir(&remote.0)
+                .env("GIT_AUTHOR_DATE", &date)
+                .env("GIT_COMMITTER_DATE", &date)
+                .args(["commit", "--allow-empty", "-m", &branch])
+                .output()
+                .unwrap();
+            assert!(status.status.success());
+        }
+        git(
+            path,
+            &["remote", "add", "origin", remote.0.to_str().unwrap()],
+        )
+        .unwrap();
+        git(path, &["fetch", "origin"]).unwrap();
+        git(path, &["checkout", "-B", "main", "--track", "origin/main"]).unwrap();
+        git(path, &["branch", "--no-track", "topic/9", "origin/topic/9"]).unwrap();
+        git(
+            path,
+            &[
+                "branch",
+                "--track",
+                "different-local-name",
+                "origin/topic/8",
+            ],
+        )
+        .unwrap();
+        git(
+            path,
+            &[
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/remotes/origin/topic/7",
+            ],
+        )
+        .unwrap();
+        git(
+            path,
+            &[
+                "update-ref",
+                "refs/remotes/other/extra",
+                "refs/remotes/origin/topic/9",
+            ],
+        )
+        .unwrap();
+        git(path, &["commit", "--allow-empty", "-m", "Local work"]).unwrap();
+        let before = snapshot(path).unwrap();
+        let names: Vec<_> = before
+            .recent_origin_branches
+            .iter()
+            .map(|branch| branch.reference.name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "origin/topic/7",
+                "origin/topic/6",
+                "origin/topic/5",
+                "origin/topic/4",
+                "origin/topic/3"
+            ]
+        );
+        assert!(before
+            .recent_origin_branches
+            .iter()
+            .all(|branch| branch.author == "Natalie Test" && branch.date.starts_with("2026-11-01")));
+        for branch in &before.recent_origin_branches {
+            assert!(before
+                .commits
+                .iter()
+                .any(|commit| commit.hash == branch.reference.hash));
+        }
+        assert!(before
+            .commits
+            .iter()
+            .any(|commit| commit.subject == "Local work"));
+        assert!(!before
+            .commits
+            .iter()
+            .any(|commit| commit.subject == "topic/1" || commit.subject == "topic/2"));
+        for branch in &before.recent_origin_branches {
+            let commit = before
+                .commits
+                .iter()
+                .find(|commit| commit.hash == branch.reference.hash)
+                .unwrap();
+            assert!(commit.origin_only);
+            assert!(!commit.local_only && !commit.incoming);
+        }
+        assert!(before
+            .commits
+            .iter()
+            .filter(|commit| ["Local work", "Shared base", "topic/8", "topic/9"]
+                .contains(&commit.subject.as_str()))
+            .all(|commit| !commit.origin_only));
+        let (branches, incoming) = local_branches(path).unwrap();
+        let paged = branch_history(path, &branches, &incoming, 1, 2).unwrap();
+        assert_eq!(
+            paged.iter().map(|commit| &commit.hash).collect::<Vec<_>>(),
+            before.commits[1..3]
+                .iter()
+                .map(|commit| &commit.hash)
+                .collect::<Vec<_>>()
+        );
+        git(&remote.0, &["checkout", "-B", "brand-new", &base]).unwrap();
+        let status = Command::new("/usr/bin/git")
+            .current_dir(&remote.0)
+            .env("GIT_AUTHOR_DATE", "2026-11-02T00:00:00+00:00")
+            .env("GIT_COMMITTER_DATE", "2026-11-02T00:00:00+00:00")
+            .args(["commit", "--allow-empty", "-m", "New remote branch"])
+            .output()
+            .unwrap();
+        assert!(status.status.success());
+        assert!(!snapshot(path)
+            .unwrap()
+            .remote_branches
+            .iter()
+            .any(|branch| branch.name == "origin/brand-new"));
+        git(path, &["fetch", "origin"]).unwrap();
+        let after = snapshot(path).unwrap();
+        assert_eq!(
+            after.recent_origin_branches[0].reference.name,
+            "origin/brand-new"
+        );
+        assert!(after
+            .commits
+            .iter()
+            .any(|commit| commit.subject == "New remote branch"));
+        assert_eq!(after.branch, "main");
+        assert!(!after
+            .branches
+            .iter()
+            .any(|branch| branch.reference.name == "brand-new"));
+        let older_remote_hash = git(path, &["rev-parse", "origin/topic/1"]).unwrap();
+        let remote_history = history(
+            path,
+            &[older_remote_hash.trim()],
+            &Default::default(),
+            &local_branches(path).unwrap().0,
+            0,
+            100,
+        )
+        .unwrap();
+        assert!(remote_history[0].origin_only);
+        git(
+            path,
+            &["branch", "--track", "review-topic-seven", "origin/topic/7"],
+        )
+        .unwrap();
+        let tracked = snapshot(path).unwrap();
+        assert!(
+            !tracked
+                .commits
+                .iter()
+                .find(|commit| commit.subject == "topic/7")
+                .unwrap()
+                .origin_only
+        );
+        let unborn = test_repository();
+        git(
+            &unborn.0,
+            &["remote", "add", "origin", remote.0.to_str().unwrap()],
+        )
+        .unwrap();
+        git(&unborn.0, &["fetch", "origin"]).unwrap();
+        let fetched_without_checkout = snapshot(&unborn.0).unwrap();
+        assert!(fetched_without_checkout.head.is_none());
+        assert_eq!(fetched_without_checkout.recent_origin_branches.len(), 5);
+        assert!(fetched_without_checkout
+            .commits
+            .iter()
+            .any(|commit| commit.subject == "New remote branch"));
+        git(path, &["remote", "remove", "origin"]).unwrap();
+        assert!(snapshot(path).unwrap().recent_origin_branches.is_empty());
     }
 
     #[test]

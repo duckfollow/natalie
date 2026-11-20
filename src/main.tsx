@@ -1,3 +1,4 @@
+import { useGenerateCommitMessage } from "./use-generate-commit-message";
 import {
   CircleAlert,
   ArrowDownToLine,
@@ -21,6 +22,7 @@ import {
   X,
   Layers3,
   LoaderCircle,
+  WandSparkles,
   Minus,
   Plus,
   RefreshCw,
@@ -855,6 +857,10 @@ function App() {
     [];
   const unstaged = repo?.changes.filter((item) => !isConflict(item) && item.worktree !== " ") ?? [];
   const root = repo?.root ?? null;
+  const generatedMessage = useGenerateCommitMessage({
+    root, enabled: staged.length > 0 && !busy && !repo?.rebasing && conflicts.length === 0,
+    message, setMessage,
+  });
   const [previewingRebase, setPreviewingRebase] = useState(false);
   const [hoverRebase, setHoverRebase] = useState<{ repo: Snapshot; preview: RebasePreview } | null>(null);
   const [rebaseReview, setRebaseReview] = useState<{ repo: Snapshot; preview: RebasePreview } | null>(null);
@@ -2039,7 +2045,7 @@ function App() {
                   className="commit-form"
                   onSubmit={(event) => {
                     event.preventDefault();
-                    if (busy || repo.rebasing || conflicts.length || !staged.length || !message.trim()) return;
+                    if (busy || generatedMessage.working || repo.rebasing || conflicts.length || !staged.length || !message.trim()) return;
                     void update(
                       () =>
                         repository<Snapshot>(root, { kind: "commit", message }),
@@ -2051,10 +2057,20 @@ function App() {
                     );
                   }}
                 >
-                  <label htmlFor="commit-message">
-                    <GitCommitHorizontal size={16} aria-hidden="true" /> Commit
-                    message
-                  </label>
+                  <div className="commit-message-header">
+                    <label htmlFor="commit-message">
+                      <GitCommitHorizontal size={16} aria-hidden="true" /> Commit message
+                    </label>
+                    <button type="button" className="commit-message-generate"
+                      disabled={busy || generatedMessage.working || repo.rebasing || conflicts.length > 0 || !staged.length}
+                      aria-busy={generatedMessage.working} onClick={() => void generatedMessage.generate()}
+                      title="Generate a commit message from staged changes">
+                      {generatedMessage.working ? <LoaderCircle size={12} className="spin" aria-hidden="true" /> : <WandSparkles size={12} aria-hidden="true" />}
+                      {generatedMessage.working ? "Generating…" : "Generate message"}
+                    </button>
+                  </div>
+                  {generatedMessage.error && <small className="commit-message-error" role="status">{generatedMessage.error}</small>}
+                  {generatedMessage.truncated && <small className="commit-message-note">Large changes were shortened for analysis. Review the message before committing.</small>}
                   <textarea
                     id="commit-message"
                     placeholder="Describe your changes"
@@ -2064,7 +2080,7 @@ function App() {
                   />
                   <button
                     className="primary"
-                    disabled={busy || repo.rebasing || conflicts.length > 0 || !staged.length || !message.trim()}
+                    disabled={busy || generatedMessage.working || repo.rebasing || conflicts.length > 0 || !staged.length || !message.trim()}
                     aria-describedby={conflicts.length ? "commit-conflict-help" : undefined}
                   >
                     <GitCommitHorizontal size={15} aria-hidden="true" />

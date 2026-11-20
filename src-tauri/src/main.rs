@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod updates;
+mod commit_message;
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde::{Deserialize, Serialize};
@@ -498,6 +499,8 @@ enum ConflictResolution {
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum Action {
+    CommitMessageContext,
+    CheckCommitMessageIndex { tree: String, head: Option<String>, branch: String },
     Open {
         folder: String,
     },
@@ -640,6 +643,7 @@ struct ImagePreview {
 #[derive(Serialize)]
 #[serde(untagged)]
 enum Response {
+    CommitMessageContext(commit_message::CommitMessageContext),
     Snapshot(Snapshot),
     Unchanged(()),
     Text(String),
@@ -1028,6 +1032,11 @@ fn perform(root: Option<String>, action: Action) -> Result<Response, String> {
             } else {
                 snapshot(root).map(Response::Snapshot)
             }
+        }
+        Action::CommitMessageContext => commit_message::context(root).map(Response::CommitMessageContext),
+        Action::CheckCommitMessageIndex { tree, head, branch } => {
+            commit_message::check_context(root, &tree, head.as_deref(), &branch)?;
+            Ok(Response::Unchanged(()))
         }
         Action::CheckSoftReset { hash, branch, head } => {
             check_soft_reset(root, &hash, &branch, &head)?;
@@ -1426,14 +1435,14 @@ fn main() {
 mod tests {
     use super::*;
 
-    struct TestRepository(std::path::PathBuf);
+    pub(crate) struct TestRepository(pub(crate) std::path::PathBuf);
     impl Drop for TestRepository {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
     }
 
-    fn test_repository() -> TestRepository {
+    pub(crate) fn test_repository() -> TestRepository {
         use std::sync::atomic::{AtomicUsize, Ordering};
         static NEXT_REPOSITORY: AtomicUsize = AtomicUsize::new(0);
         let folder = std::env::temp_dir().join(format!(

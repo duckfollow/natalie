@@ -2984,3 +2984,30 @@ button.image-preview-canvas:hover:not(:disabled) {
   font-weight: 600;
   white-space: nowrap;
 }
+
+.commit-message-note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.commit-message-error {
+  color: var(--error);
+  font-size: 11px;
+}
+
+.commit-message-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.commit-form .commit-message-generate {
+  padding: 4px 7px;
+  font-size: 11px;
+  color: var(--accent);
+}

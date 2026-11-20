@@ -12,6 +12,7 @@ The build is signed ad hoc and has no Apple notarization. If macOS blocks the fi
 
 ## Using Natalie
 
+- In File status, stage your changes and click **Generate message** to fill the commit-message field directly using local diff rules and the language of recent commits. Generated titles follow [Conventional Commits 1.0.0](https://www.conventionalcommits.org/en/v1.0.0/), with a type, an optional scope, and a short description. Review or edit the generated text before committing.
 - Choose **Open repo** to open a local working tree. Natalie uses your repository’s Git configuration and commit hooks.
 - Open **History** to browse the commit graph, or use **Search** to find commits by subject, author, hash, or ref. Both views load more commits as you scroll.
 - The main graph also includes the five most recently updated origin branches that have no local counterpart or tracking branch, ordered by the latest commit’s committer date. These origin-only lines are dashed with solid commit dots; history shared with local/tracked branches uses its existing visual state. Remote labels retain the `origin/` prefix. Hover a recent origin branch to see its latest commit author and time.

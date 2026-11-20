@@ -1409,9 +1409,25 @@ button.image-preview-canvas:hover:not(:disabled) {
 .repo-nav-items small {
   color: var(--muted);
 }
-.repo-branch-folder > button {
-  margin-inline-start: 12px;
-  width: calc(100% - 12px);
+.repo-branch-children {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 2px;
+  margin-inline-start: 15px;
+  padding-inline-start: 5px;
+  border-inline-start: 1px solid var(--line);
+  min-width: 0;
+}
+.repo-branch-children > .repo-reference {
+  width: 100%;
+}
+.branch-folder-new {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  margin-inline-start: auto;
+  border-radius: 50%;
+  background: var(--status-added);
 }
 .workspace-list-title {
   margin: 0;

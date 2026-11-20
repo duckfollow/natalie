@@ -1,3 +1,4 @@
+import { buildBranchTree, type BranchFolder } from "./branch-tree";
 import { RepositoryInfo } from "./RepositoryInfo";
 import {
   ArrowDown,
@@ -163,12 +164,6 @@ export function RepositorySidebar({
     });
   }
 
-  const groups = new Map<string, LocalBranch[]>();
-  for (const ref of branches) {
-    const slash = ref.name.indexOf("/");
-    const group = slash < 0 ? "" : ref.name.slice(0, slash);
-    groups.set(group, [...(groups.get(group) ?? []), ref]);
-  }
   const refButton = (ref: Reference & Partial<LocalBranch>, label = ref.name, current = false, activate = () => onCommit(ref.hash), checkout?: { branch: string; remote?: string; tag?: boolean }) => {
     const behind = ref.behind ?? 0;
     const ahead = ref.ahead ?? 0;
@@ -226,6 +221,31 @@ export function RepositorySidebar({
     const remote = remoteNames.find((name) => ref.name.startsWith(name + "/"));
     if (remote) remoteGroups.set(remote, [...(remoteGroups.get(remote) ?? []), ref]);
   }
+  function renderBranches<T extends Reference>(tree: BranchFolder<T>, remote?: string): ReactNode {
+    const selected = remote ? historyBranch : branch;
+    return <>
+      {tree.branches.map((ref) => refButton(
+        ref,
+        ref.name.split("/").at(-1)!,
+        ref.name === selected,
+        remote ? () => onRemoteBranch(ref) : undefined,
+        { branch: remote ? ref.name.slice(remote.length + 1) : ref.name, remote },
+      ))}
+      {[...tree.folders.values()].map((folder) => (
+        <details className="repo-branch-folder" key={folder.path}
+          open={!!selected && selected.startsWith(folder.path + "/")}>
+          <summary title={folder.path}>
+            <ChevronRight size={12} />
+            <Folder size={14} />
+            <span className="repo-reference-name">{folder.name}</span>
+            {remote && newOriginBranches.some((name) => name.startsWith(folder.path + "/")) &&
+              <span className="branch-folder-new" title="Contains new branches" aria-label="Contains new branches" />}
+          </summary>
+          <div className="repo-branch-children">{renderBranches(folder, remote)}</div>
+        </details>
+      ))}
+    </>;
+  }
   const expandSection = collapsed ? onExpand : undefined;
   return (
     <aside
@@ -268,33 +288,7 @@ export function RepositorySidebar({
         </div>
         <Section onExpand={expandSection} label="Branches" icon={<GitBranch size={15} />} open>
           {!branches.length && <small>No branches yet</small>}
-          {(groups.get("") ?? []).map((ref) =>
-            refButton(ref, ref.name, ref.name === branch, undefined, { branch: ref.name }),
-          )}
-          {[...groups]
-            .filter(([group]) => group)
-            .map(([group, refs]) => (
-              <details
-                className="repo-branch-folder"
-                key={group}
-                open={refs.some((ref) => ref.name === branch)}
-              >
-                <summary title={group}>
-                  <ChevronRight size={12} />
-                  <Folder size={14} />
-                  <span className="repo-reference-name">{group}</span>
-                </summary>
-                {refs.map((ref) =>
-                  refButton(
-                    ref,
-                    ref.name.slice(group.length + 1),
-                    ref.name === branch,
-                    undefined,
-                    { branch: ref.name },
-                  ),
-                )}
-              </details>
-            ))}
+          {renderBranches(buildBranchTree(branches))}
         </Section>
         <Section onExpand={expandSection} label="Tags" icon={<Tag size={15} />}>
           {tags.length ? (
@@ -306,22 +300,17 @@ export function RepositorySidebar({
         <Section onExpand={expandSection} label="Remotes" icon={<Cloud size={15} />}>
           {remotes.length ? (
             remotes.map((name) => (
-              <details className="repo-branch-folder" key={name}>
+              <details className="repo-branch-folder" key={name} open={!!historyBranch && historyBranch.startsWith(name + "/")}>
                 <summary>
                   <ChevronRight size={12} />
                   <Cloud size={14} />
                   <span className="repo-reference-name">{name}</span>
+                  {newOriginBranches.some((branch) => branch.startsWith(name + "/")) &&
+                    <span className="branch-folder-new" title="Contains new branches" aria-label="Contains new branches" />}
                 </summary>
-                {[...(remoteGroups.get(name) ?? [])].sort((a, b) => {
-                  const rank = (ref: Reference) => {
-                    const index = recent_origin_branches.findIndex((branch) => branch.name === ref.name);
-                    return index < 0 ? recent_origin_branches.length : index;
-                  };
-                  return rank(a) - rank(b);
-                }).map((ref) => {
-                  const label = ref.name.slice(name.length + 1);
-                  return refButton(ref, label, ref.name === historyBranch, () => onRemoteBranch(ref), { remote: name, branch: label });
-                })}
+                <div className="repo-branch-children">
+                  {renderBranches(buildBranchTree(remoteGroups.get(name) ?? [], name), name)}
+                </div>
                 {!remoteGroups.has(name) && <small>No fetched branches</small>}
               </details>
             ))

@@ -2985,20 +2985,6 @@ button.image-preview-canvas:hover:not(:disabled) {
   white-space: nowrap;
 }
 
-.commit-message-note {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--muted);
-  font-size: 10px;
-  line-height: 1.5;
-}
-
-.commit-message-error {
-  color: var(--error);
-  font-size: 11px;
-}
-
 .commit-message-header {
   display: flex;
   align-items: center;
@@ -3006,8 +2992,102 @@ button.image-preview-canvas:hover:not(:disabled) {
   flex-wrap: wrap;
   gap: 8px;
 }
+.commit-generator-actions {
+  display: inline-flex;
+  flex: none;
+  align-items: stretch;
+  margin-inline-start: auto;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel);
+}
 .commit-form .commit-message-generate {
-  padding: 4px 7px;
-  font-size: 11px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 29px;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
   color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+}
+.commit-message-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 7px 8px;
+  border-radius: 6px;
+  background: var(--diff-removed-background);
+  color: var(--error);
+  font-size: 11px;
+  line-height: 1.5;
+}
+.commit-message-error svg {
+  flex: none;
+  margin-top: 2px;
+}
+
+.commit-ai-status {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+.commit-ai-status[data-ready="false"] { background: var(--error); }
+.commit-ai-status[data-ready="true"] { background: var(--status-added); }
+
+.commit-hold-control {
+  position: relative;
+}
+.commit-hold-control > button {
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+.commit-format-menu {
+  position: absolute;
+  z-index: 20;
+  right: 0;
+  bottom: calc(100% + 6px);
+  min-width: 145px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--toolbar);
+  box-shadow: 0 8px 24px var(--backdrop);
+}
+.commit-form .commit-format-menu button {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr) 14px;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 31px;
+  padding: 5px 8px;
+  border: 0;
+  background: transparent;
+  text-align: start;
+  font-size: 11px;
+}
+.commit-format-menu button[aria-checked="true"] {
+  color: var(--accent);
+  background: var(--active);
+}
+
+.commit-model-response {
+  color: var(--muted);
+  font-size: 11px;
+}
+.commit-model-response pre {
+  max-height: 140px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding: 7px;
+  background: var(--panel);
 }

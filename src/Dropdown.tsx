@@ -1,7 +1,7 @@
 import { Check, ChevronDown } from "lucide-react";
-import { useEffect, useId, useState, type KeyboardEvent } from "react";
+import { useEffect, useId, useState, type ReactNode, type KeyboardEvent } from "react";
 
-type Option = { value: string; label: string };
+type Option = { value: string; label: string; icon?: ReactNode };
 
 export function Dropdown({
   label,
@@ -10,6 +10,8 @@ export function Dropdown({
   onChange,
   placeholder = "Select an option",
   autoFocus,
+  disabled = false,
+  iconOnly = false,
 }: {
   label: string;
   options: Option[];
@@ -17,11 +19,13 @@ export function Dropdown({
   onChange: (value: string) => void;
   placeholder?: string;
   autoFocus?: boolean;
+  disabled?: boolean;
+  iconOnly?: boolean;
 }) {
   const id = useId();
   const [active, setActive] = useState<number | null>(null);
   const selected = options.findIndex((option) => option.value === value);
-  const open = active !== null && options.length > 0;
+  const open = !disabled && active !== null && options.length > 0;
   const activeOption = open ? options[active] : undefined;
 
   useEffect(() => {
@@ -68,11 +72,13 @@ export function Dropdown({
         role="combobox"
         className="dropdown-trigger"
         autoFocus={autoFocus}
-        aria-labelledby={`${id}-label`}
+        aria-labelledby={iconOnly ? undefined : `${id}-label`}
+        aria-label={iconOnly ? `${label}: ${options[selected]?.label ?? placeholder}` : undefined}
+        title={iconOnly ? options[selected]?.label : undefined}
         aria-expanded={open}
         aria-controls={open ? `${id}-options` : undefined}
         aria-activedescendant={activeOption ? `${id}-option-${active}` : undefined}
-        disabled={!options.length}
+        disabled={disabled || !options.length}
         onClick={(event) => {
           event.currentTarget.focus();
           setActive(open ? null : Math.max(0, selected));
@@ -80,9 +86,10 @@ export function Dropdown({
         onBlur={() => setActive(null)}
         onKeyDown={handleKeyDown}
       >
-        <span className={selected < 0 ? "dropdown-placeholder" : undefined}>
+        {options[selected]?.icon}
+        {!iconOnly && <span className={selected < 0 ? "dropdown-placeholder" : undefined}>
           {options[selected]?.label ?? placeholder}
-        </span>
+        </span>}
         <ChevronDown size={15} aria-hidden="true" />
       </button>
       {open && (
@@ -97,6 +104,7 @@ export function Dropdown({
               onMouseDown={(event) => event.preventDefault()}
               onClick={() => choose(option)}
             >
+              {option.icon}
               <span>{option.label}</span>
               {index === selected && <Check size={15} aria-hidden="true" />}
             </li>

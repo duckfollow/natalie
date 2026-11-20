@@ -16,7 +16,7 @@ export interface CommitMessageContext {
   truncated: boolean;
 }
 
-const docs = /\.(md|mdx|rst|txt)$/i;
+const docs = /\.(md|mdx|rst|txt)$|(?:^|\/)(?:licen[cs]e|copying|notice)(?:\.[^/]*)?$/i;
 const tests = /(?:^|\/)(?:tests?|__tests__)\/|[.-](?:test|spec)\./i;
 const styles = /\.(css|scss|sass|less)$/i;
 const dependencyFile = /(?:^|\/)(?:package(?:-lock)?\.json|yarn\.lock|pnpm-lock\.yaml|Cargo\.(?:toml|lock)|requirements[^/]*\.txt|go\.(?:mod|sum))$/;
@@ -193,4 +193,29 @@ export function suggestCommitMessages(context: CommitMessageContext, override?: 
 
 export function canReplaceGeneratedMessage(current: string, startedWith: string): boolean {
   return current === startedWith;
+}
+
+export type MessageDetail = "short" | "detailed" | "analysis";
+
+export function formatCommitMessage(title: string, context: CommitMessageContext, detail: MessageDetail): string {
+  if (detail === "short") return title;
+  const statusNames: Record<string, string> = { A: "Add", D: "Remove", R: "Rename", C: "Copy", M: "Update", T: "Change type of" };
+  const files = context.files.slice(0, 20).map(file => {
+    const name = file.path.replace(/[\r\n\x00-\x1f]/g, " ");
+    const previous = file.previous_path?.replace(/[\r\n\x00-\x1f]/g, " ");
+    const path = previous ? `${previous} → ${name}` : name;
+    return `- ${statusNames[file.status] || "Update"} ${path}${file.binary ? " (binary)" : ""}`;
+  });
+  if (context.files.length > 20) files.push(`- ${context.files.length - 20} more staged files`);
+  const body = [title, "", ...files];
+  if (detail === "analysis") {
+    const analyzed = context.files.filter(file => !file.binary && !file.omitted);
+    const added = changedLines(analyzed, "+").length;
+    const removed = changedLines(analyzed, "-").length;
+    body.push("", `Staged scope: ${context.files.length} files; ${added} added and ${removed} removed lines in the analyzed diff.`);
+    if (context.truncated || context.files.some(file => file.omitted)) {
+      body.push("Some staged content was omitted or shortened during analysis.");
+    }
+  }
+  return body.join("\n");
 }

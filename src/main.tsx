@@ -1,3 +1,4 @@
+import { CommitGenerateButton } from "./CommitGenerateButton";
 import { useGenerateCommitMessage } from "./use-generate-commit-message";
 import {
   CircleAlert,
@@ -22,7 +23,6 @@ import {
   X,
   Layers3,
   LoaderCircle,
-  WandSparkles,
   Minus,
   Plus,
   RefreshCw,
@@ -2061,20 +2061,28 @@ function App() {
                     <label htmlFor="commit-message">
                       <GitCommitHorizontal size={16} aria-hidden="true" /> Commit message
                     </label>
-                    <button type="button" className="commit-message-generate"
+                    <CommitGenerateButton
                       disabled={busy || generatedMessage.working || repo.rebasing || conflicts.length > 0 || !staged.length}
-                      aria-busy={generatedMessage.working} onClick={() => void generatedMessage.generate()}
-                      title="Generate a commit message from staged changes">
-                      {generatedMessage.working ? <LoaderCircle size={12} className="spin" aria-hidden="true" /> : <WandSparkles size={12} aria-hidden="true" />}
-                      {generatedMessage.working ? "Generating…" : "Generate message"}
-                    </button>
+                      working={generatedMessage.working} ready={generatedMessage.aiReady}
+                      detail={generatedMessage.detail} onDetail={generatedMessage.setDetail}
+                      onGenerate={() => void generatedMessage.generate()} />
                   </div>
-                  {generatedMessage.error && <small className="commit-message-error" role="status">{generatedMessage.error}</small>}
-                  {generatedMessage.truncated && <small className="commit-message-note">Large changes were shortened for analysis. Review the message before committing.</small>}
+                  {generatedMessage.error && (
+                    <div className="commit-message-error" role="alert">
+                      <CircleAlert size={13} aria-hidden="true" />
+                      <span>{generatedMessage.error}</span>
+                    </div>
+                  )}
+                  {generatedMessage.modelResponse && (
+                    <details className="commit-model-response">
+                      <summary>View AI response</summary>
+                      <pre>{generatedMessage.modelResponse}</pre>
+                    </details>
+                  )}
                   <textarea
                     id="commit-message"
                     placeholder="Describe your changes"
-                    rows={3}
+                    rows={generatedMessage.detail === "short" ? 3 : 7}
                     value={message}
                     onChange={(event) => setMessage(event.target.value)}
                   />

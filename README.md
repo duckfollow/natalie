@@ -47,3 +47,11 @@ public distribution, override the local identity with `APPLE_SIGNING_IDENTITY`
 using a Developer ID Application certificate and configure notarization credentials
 as described in the [Tauri macOS signing guide](https://v2.tauri.app/distribute/sign/macos/).
 Do not modify the app bundle after signing.
+
+## Commit message generation
+
+Stage the files you want to commit, then click the bot button beside **Commit message**. Natalie analyzes the staged diff locally and prepares Conventional Commit titles. Hold the button or right-click to select **Short**, **Detailed**, or **Analysis**. Your draft remains editable, and generation never creates a commit. Edits made while generation is running are preserved. The staged index and branch are checked again before applying the result.
+
+Generate message uses local SmolLM2 Q4 automatically. The first generation downloads the pinned SmolLM2-135M-Instruct ONNX Q4 model from Hugging Face; model files use the browser cache when available. The model ranks three rule-generated titles from the staged diff in a local worker. It selects a supplied title instead of generating free-form text. Model loading or generation failures and invalid titles automatically use the rule-based result. The ONNX runtime is bundled with Natalie. The bundled runtime adds approximately 22 MB of runtime assets to the build, plus the separately downloaded model. Large diffs, generated files and binary contents are bounded or omitted from analysis.
+
+The model runs when you choose Generate message. No staged code is sent to a hosted inference API. Review generated titles before committing.

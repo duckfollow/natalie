@@ -101,6 +101,7 @@ fn run(root: &Path, args: &[&str]) -> Result<Output, String> {
     }
     command
         .args(args)
+        .env("GIT_OPTIONAL_LOCKS", "0")
         .env("GIT_TERMINAL_PROMPT", "0")
         .output()
         .map_err(|error| format!("Could not start Git: {error}"))

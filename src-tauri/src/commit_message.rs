@@ -1,6 +1,6 @@
 use serde::Serialize;
 use std::{
-    io::Read,
+    io::{Read, Write},
     path::Path,
     process::{Command, Stdio},
 };
@@ -25,9 +25,27 @@ struct CommitMessageVersion {
     branch: String,
 }
 
+// Fingerprint the staged entries without write-tree, which acquires index.lock.
+fn index_fingerprint(root: &Path) -> Result<String, String> {
+    let entries = super::git(root, &["ls-files", "--stage", "-z"])?;
+    let mut child = Command::new("/usr/bin/git")
+        .current_dir(root)
+        .args(["hash-object", "--stdin"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| error.to_string())?;
+    let write = child.stdin.take().ok_or("Could not open Git input")?
+        .write_all(entries.as_bytes());
+    let output = child.wait_with_output().map_err(|error| error.to_string())?;
+    write.map_err(|error| error.to_string())?;
+    Ok(super::output(output, false)?.trim().to_owned())
+}
+
 fn version(root: &Path) -> Result<CommitMessageVersion, String> {
     Ok(CommitMessageVersion {
-        tree: super::git(root, &["write-tree"])?.trim().to_owned(),
+        tree: index_fingerprint(root)?,
         head: super::git(root, &["rev-parse", "--verify", "HEAD"])
             .ok()
             .map(|hash| hash.trim().to_owned()),
@@ -105,6 +123,9 @@ fn read_diff(root: &Path, path: &str, limit: usize) -> Result<(String, bool), St
 }
 
 pub fn context(root: &Path) -> Result<CommitMessageContext, String> {
+    if !super::git(root, &["ls-files", "--unmerged", "-z"])?.is_empty() {
+        return Err("Resolve conflicts before suggesting a commit message.".into());
+    }
     let CommitMessageVersion { tree, head, branch } = version(root)?;
     let names = super::git(
         root,
@@ -199,7 +220,7 @@ pub fn check_context(
     let current_head = super::git(root, &["rev-parse", "--verify", "HEAD"]).ok();
     let current_branch =
         super::git(root, &["symbolic-ref", "--quiet", "--short", "HEAD"]).unwrap_or_default();
-    if super::git(root, &["write-tree"])?.trim() != expected
+    if index_fingerprint(root)? != expected
         || current_head.as_deref().map(str::trim) != head
         || current_branch.trim() != branch
     {
@@ -213,6 +234,19 @@ pub fn check_context(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn context_does_not_need_or_remove_an_index_lock() {
+        let repo = crate::tests::test_repository();
+        let root = &repo.0;
+        std::fs::write(root.join("file.ts"), "staged").unwrap();
+        crate::git(root, &["add", "--", "file.ts"]).unwrap();
+        let lock = root.join(".git/index.lock");
+        std::fs::write(&lock, "another process").unwrap();
+        let value = context(root).unwrap();
+        check_context(root, &value.tree, value.head.as_deref(), &value.branch).unwrap();
+        assert_eq!(std::fs::read_to_string(lock).unwrap(), "another process");
+    }
+
     #[test]
     fn context_reads_only_staged_content_and_detects_index_changes() {
         let repo = crate::tests::test_repository();

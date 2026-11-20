@@ -82,3 +82,13 @@ test("generation replaces the starting draft and preserves edits made during the
   assert.equal(canReplaceGeneratedMessage("New manual edit", "My existing draft"), false);
   assert.equal(canReplaceGeneratedMessage("New manual edit", ""), false);
 });
+
+test("detail modes preserve the title and describe only staged files", async () => {
+  const { formatCommitMessage } = await import("../src/commit-message.ts");
+  const staged = context([file("src/a.ts", "+const a = 1;\n-const a = 0;")]);
+  const title = "fix: update a";
+  assert.equal(formatCommitMessage(title, staged, "short"), title);
+  assert.equal(formatCommitMessage(title, staged, "detailed"), title + "\n\n- Update src/a.ts");
+  assert.match(formatCommitMessage(title, staged, "analysis"), /1 added and 1 removed/);
+  assert.ok(!formatCommitMessage(title, staged, "detailed").includes("Staged scope"));
+});

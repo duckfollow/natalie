@@ -74,6 +74,7 @@ struct Snapshot {
     remote_branches: Vec<Reference>,
     recent_origin_branches: Vec<RecentOriginBranch>,
     origin_url: Option<String>,
+    commit_author: Option<String>,
     stashes: Vec<Reference>,
     submodules: Vec<String>,
     cherry_picking: bool,
@@ -466,6 +467,10 @@ fn snapshot(folder: &Path) -> Result<Snapshot, String> {
     .status
     .success();
     let rebasing = rebase_in_progress(path)?;
+    let commit_author = git(path, &["var", "GIT_AUTHOR_IDENT"]).ok().and_then(|identity| {
+        let end = identity.rfind('>')?;
+        Some(identity[..=end].to_owned())
+    });
     Ok(Snapshot {
         root,
         repo_version,
@@ -479,6 +484,7 @@ fn snapshot(folder: &Path) -> Result<Snapshot, String> {
         remote_branches,
         recent_origin_branches,
         origin_url,
+        commit_author,
         stashes,
         submodules,
         cherry_picking,
@@ -550,6 +556,9 @@ enum Action {
     DiscardMany {
         paths: Vec<String>,
     },
+    ApplyStash { hash: String },
+    DeleteStash { hash: String },
+    SetCommitIdentity { name: String, email: String },
     Commit {
         message: String,
     },
@@ -982,6 +991,50 @@ fn check_soft_reset(root: &Path, hash: &str, branch: &str, head: &str) -> Result
     Ok(())
 }
 
+fn change_stash(root: &Path, hash: &str, delete: bool) -> Result<(), String> {
+    let list = git(root, &["stash", "list", "--format=%H"])?;
+    let index = list.lines().position(|entry| entry == hash)
+        .ok_or("This stash changed or was removed. Refresh and try again.")?;
+    if delete {
+        let reference = format!("stash@{{{index}}}");
+        if git(root, &["rev-parse", "--verify", &reference])?.trim_end() != hash {
+            return Err("This stash changed. Refresh and try again.".into());
+        }
+        git(root, &["stash", "drop", &reference])?;
+    } else {
+        git(root, &["stash", "apply", hash])?;
+    }
+    Ok(())
+}
+
+fn set_commit_identity(root: &Path, name: &str, email: &str) -> Result<(), String> {
+    let name = name.trim();
+    let email = email.trim();
+    if name.is_empty() || email.is_empty()
+        || [name, email].iter().any(|value| value.chars().any(char::is_control) || value.contains(['<', '>']))
+        || email.chars().any(char::is_whitespace)
+    {
+        return Err("Enter a name and email without angle brackets or line breaks.".into());
+    }
+    let directory = git(root, &["rev-parse", "--path-format=absolute", "--git-common-dir"])?;
+    let config = Path::new(directory.trim_end()).join("config");
+    let lock = config.with_extension("lock");
+    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&lock)
+        .map_err(|_| "Git configuration is locked. Try again after other Git operations finish.")?;
+    let result = (|| {
+        let bytes = std::fs::read(&config).map_err(|error| error.to_string())?;
+        file.write_all(&bytes).map_err(|error| error.to_string())?;
+        let permissions = std::fs::metadata(&config).map_err(|error| error.to_string())?.permissions();
+        std::fs::set_permissions(&lock, permissions).map_err(|error| error.to_string())?;
+        let path = lock.to_str().ok_or("Git config path is not valid UTF-8.")?;
+        git(root, &["config", "--file", path, "--replace-all", "user.name", name])?;
+        git(root, &["config", "--file", path, "--replace-all", "user.email", email])?;
+        std::fs::rename(&lock, &config).map_err(|error| error.to_string())
+    })();
+    if result.is_err() { let _ = std::fs::remove_file(lock); }
+    result
+}
+
 fn perform(root: Option<String>, action: Action) -> Result<Response, String> {
     let action = match action {
         Action::Open { folder } => return snapshot(Path::new(&folder)).map(Response::Snapshot),
@@ -1187,6 +1240,11 @@ fn perform(root: Option<String>, action: Action) -> Result<Response, String> {
                 }
                 Action::Discard { path } => discard_paths(root, &[path])?,
                 Action::DiscardMany { paths } => discard_paths(root, &paths)?,
+                Action::ApplyStash { hash } => { change_stash(root, &hash, false)?; }
+                Action::DeleteStash { hash } => { change_stash(root, &hash, true)?; }
+                Action::SetCommitIdentity { name, email } => {
+                    set_commit_identity(root, &name, &email)?;
+                }
                 Action::Commit { message } => {
                     if message.trim().is_empty() {
                         return Err("Enter a commit message.".into());
@@ -1387,6 +1445,41 @@ async fn repository(root: Option<String>, action: Action) -> Result<Response, St
         .map_err(|error| error.to_string())?
 }
 
+#[derive(Serialize)]
+struct GitSetting { key: String, value: String, scope: String }
+
+fn read_git_settings(root: &Path) -> Result<Vec<GitSetting>, String> {
+    git(root, &["rev-parse", "--git-dir"])?;
+    let keys = ["user.name", "user.email", "remote.origin.url", "remote.origin.fetch", "pull.rebase", "pull.ff", "push.default",
+        "push.autoSetupRemote", "fetch.prune", "commit.gpgsign", "tag.gpgsign",
+        "gpg.format", "core.autocrlf", "core.safecrlf", "core.ignorecase", "core.filemode",
+        "core.editor", "diff.tool", "merge.tool", "credential.helper"];
+    let mut rows = Vec::new();
+    for (flag, scope) in [("--system", "System"), ("--global", "Global"), ("--local", "Repository")] {
+        for key in keys {
+            if let Ok(value) = git(root, &["config", flag, "--get", key]) {
+                rows.push(GitSetting { key: key.into(), scope: scope.into(),
+                    value: if key == "credential.helper" { "Configured (hidden)".into() }
+                    else if key == "remote.origin.url" {
+                        let value = value.trim_end();
+                        let clean = value.split(['?', '#']).next().unwrap_or("");
+                        if let Some((scheme, rest)) = clean.split_once("://") {
+                            let (authority, path) = rest.split_once('/').unwrap_or((rest, ""));
+                            format!("{}://{}/{}", scheme, authority.rsplit('@').next().unwrap_or(""), path)
+                        } else { clean.into() }
+                    } else { value.trim_end().into() } });
+            }
+        }
+    }
+    Ok(rows)
+}
+
+#[tauri::command]
+async fn git_settings(root: String) -> Result<Vec<GitSetting>, String> {
+    tauri::async_runtime::spawn_blocking(move || read_git_settings(Path::new(&root)))
+        .await.map_err(|error| error.to_string())?
+}
+
 #[tauri::command]
 async fn git_available() -> Result<bool, String> {
     tauri::async_runtime::spawn_blocking(|| {
@@ -1422,6 +1515,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             repository,
             git_available,
+            git_settings,
             install_command_line_tools,
             updates::check_for_updates,
             updates::open_release_page,
@@ -1464,6 +1558,61 @@ mod tests {
         git(folder, &["config", "commit.gpgsign", "false"]).unwrap();
         git(folder, &["config", "core.hooksPath", "/dev/null"]).unwrap();
         repository
+    }
+
+    #[test]
+    fn stash_actions_keep_applied_entries_and_delete_by_hash() {
+        let repo = test_repository(); let root = repo.0.as_path();
+        std::fs::write(root.join("file"), "base\n").unwrap();
+        git(root, &["add", "file"]).unwrap(); git(root, &["commit", "-m", "base"]).unwrap();
+        std::fs::write(root.join("file"), "first\n").unwrap();
+        git(root, &["stash", "push", "-m", "first"]).unwrap();
+        let first = git(root, &["rev-parse", "refs/stash"]).unwrap().trim().to_owned();
+        change_stash(root, &first, false).unwrap();
+        assert_eq!(std::fs::read_to_string(root.join("file")).unwrap(), "first\n");
+        assert_eq!(git(root, &["stash", "list", "--format=%H"]).unwrap().trim(), first);
+        git(root, &["reset", "--hard", "HEAD"]).unwrap();
+        std::fs::write(root.join("file"), "second\n").unwrap();
+        git(root, &["stash", "push", "-m", "second"]).unwrap();
+        let second = git(root, &["rev-parse", "refs/stash"]).unwrap().trim().to_owned();
+        change_stash(root, &first, true).unwrap();
+        assert_eq!(git(root, &["stash", "list", "--format=%H"]).unwrap().trim(), second);
+        assert!(change_stash(root, &first, false).is_err());
+        std::fs::write(root.join("file"), "other\n").unwrap();
+        git(root, &["add", "file"]).unwrap(); git(root, &["commit", "-m", "other"]).unwrap();
+        assert!(change_stash(root, &second, false).is_err());
+        assert!(working_changes(root).unwrap().iter().any(|change| change.index == 'U'));
+        assert_eq!(git(root, &["stash", "list", "--format=%H"]).unwrap().trim(), second);
+    }
+
+    #[test]
+    fn settings_expose_scopes_and_hide_remote_credentials() {
+        let repo = test_repository();
+        let root = repo.0.as_path();
+        git(root, &["config", "user.name", "Settings Author"]).unwrap();
+        git(root, &["config", "remote.origin.url", "https://user:secret@example.com/repo.git?token=secret"]).unwrap();
+        git(root, &["config", "credential.helper", "!secret-command"]).unwrap();
+        let rows = read_git_settings(root).unwrap();
+        assert!(rows.iter().any(|row| row.key == "user.name" && row.scope == "Repository" && row.value == "Settings Author"));
+        assert!(rows.iter().any(|row| row.key == "remote.origin.url" && row.value == "https://example.com/repo.git"));
+        assert!(!rows.iter().any(|row| row.value.contains("secret")));
+    }
+
+    #[test]
+    fn changing_commit_identity_is_local_and_preserves_config_on_failure() {
+        let repo = test_repository();
+        let root = &repo.0;
+        set_commit_identity(root, "New Author", "author@example.invalid").unwrap();
+        assert_eq!(git(root, &["config", "--local", "user.name"]).unwrap().trim(), "New Author");
+        assert_eq!(git(root, &["config", "--local", "user.email"]).unwrap().trim(), "author@example.invalid");
+        assert!(snapshot(root).unwrap().commit_author.unwrap().starts_with("New Author <author@example.invalid>"));
+        let config = root.join(".git/config");
+        let saved = std::fs::read(&config).unwrap();
+        assert!(set_commit_identity(root, "Invalid\nName", "email").is_err());
+        std::fs::write(root.join(".git/config.lock"), "other operation").unwrap();
+        assert!(set_commit_identity(root, "Another", "another@example.invalid").is_err());
+        assert_eq!(std::fs::read(config).unwrap(), saved);
+        assert_eq!(std::fs::read_to_string(root.join(".git/config.lock")).unwrap(), "other operation");
     }
 
     #[test]

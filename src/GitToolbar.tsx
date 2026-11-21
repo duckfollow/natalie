@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { Dropdown } from "./Dropdown";
-import { useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import {
   ArrowDown,
   ArrowDownCircle,
@@ -16,7 +16,7 @@ import {
   GitCommitHorizontal,
   GitMerge,
   Layers3,
-  KeyRound,
+  ShieldKeyhole,
   Link2,
   Plus,
   Save,
@@ -52,15 +52,16 @@ const operationGroups = [
   ] },
   { name: "Remote settings", actions: [
     { label: "Origin", icon: Settings2 },
-    { label: "Credentials", icon: KeyRound },
+    { label: "Authentication", icon: ShieldKeyhole },
   ] },
 ] as const;
 
-type Prompt = "Publish" | "Branch" | "Merge" | "Stash" | "Origin" | "Credentials";
+type Prompt = "Publish" | "Branch" | "Merge" | "Stash" | "Origin" | "Authentication";
 
 export function GitToolbar({
   busy,
   refreshing,
+  authorControl,
   branches,
   currentBranch,
   remotes,
@@ -82,6 +83,7 @@ export function GitToolbar({
 }: {
   busy: boolean;
   refreshing: boolean;
+  authorControl?: ReactNode;
   branches: string[];
   currentBranch: string;
   remotes: string[];
@@ -156,7 +158,7 @@ export function GitToolbar({
                   (label === "Push" && !canPush) ||
                   (label === "Merge" && !mergeBranches.length) ||
                   (label === "Stash" && !changes) ||
-                  (label === "Credentials" && !remotes.length)
+                  (label === "Authentication" && !remotes.length)
                 }
                 onClick={() => {
                   if (busy) return;
@@ -188,9 +190,9 @@ export function GitToolbar({
                       setValue(label === "Origin" ? (originUrl ?? "") : label === "Merge" ? (mergeBranches[0] ?? "") : "");
                       setPrompt(label);
                       break;
-                    case "Credentials":
+                    case "Authentication":
                       setValue(remotes.includes("origin") ? "origin" : remotes[0] ?? "");
-                      setPrompt("Credentials");
+                      setPrompt("Authentication");
                       break;
                   }
                 }}
@@ -198,7 +200,7 @@ export function GitToolbar({
                 <span className="git-toolbar-icon">
                   <Icon size={20} aria-hidden="true" />
                 </span>
-                {label}
+                {label === "Authentication" ? "Auth" : label}
                 {label === "Commit" && changes > 0 && (
                   <small className="git-toolbar-count" aria-label={`${changes} changed files`}>
                     {changes}
@@ -216,6 +218,7 @@ export function GitToolbar({
                 )}
               </button>
             ))}
+            {name === "Remote settings" && authorControl}
             {name === "Remote sync" && canPush && hasUpstream && (ahead ?? 0) > 0 && (behind ?? 0) > 0 && (
               <button type="button" disabled={busy} onClick={onRebase} onMouseEnter={() => onRebasePreview(true)}
                 onMouseLeave={() => onRebasePreview(false)} onFocus={() => onRebasePreview(true)}
@@ -240,14 +243,14 @@ export function GitToolbar({
         >
           <header>
             {prompt === "Publish" && <ArrowUpCircle size={20} aria-hidden="true" />}
-            {prompt === "Credentials" && <KeyRound size={20} aria-hidden="true" />}
+            {prompt === "Authentication" && <ShieldKeyhole size={20} aria-hidden="true" />}
             {prompt === "Origin" && <Cloud size={20} aria-hidden="true" />}
             {prompt === "Tag" && <Tag size={20} aria-hidden="true" />}
             {(prompt === "Branch" || prompt === "Rename") && <GitBranch size={20} aria-hidden="true" />}
             {prompt === "Merge" && <GitMerge size={20} aria-hidden="true" />}
             {prompt === "Stash" && <Layers3 size={20} aria-hidden="true" />}
             <h2 id="git-action-title">
-              {prompt === "Credentials" ? "HTTPS credentials" : prompt === "Publish" ? "Publish branch" : prompt === "Rename" ? "Rename branch" : prompt === "Tag" ? "Create tag" : prompt === "Branch"
+              {prompt === "Authentication" ? "Authentication" : prompt === "Publish" ? "Publish branch" : prompt === "Rename" ? "Rename branch" : prompt === "Tag" ? "Create tag" : prompt === "Branch"
                 ? "Create branch"
                 : prompt === "Merge"
                   ? `Merge into ${currentBranch}`
@@ -278,7 +281,7 @@ export function GitToolbar({
                 onAction({ kind: "stash", message: value });
               if (prompt === "Origin")
                 onAction({ kind: "set_origin", url: value.trim() });
-              if (prompt === "Credentials") {
+              if (prompt === "Authentication") {
                 if (!remotes.includes(value) || !username.trim() || !token.trim()) return;
                 onAction({ kind: "save_https_credential", remote: value, username: username.trim(), token });
               }
@@ -296,7 +299,7 @@ export function GitToolbar({
                 />
                 <p>Push <code>{currentBranch}</code> and set <code>{value}/{currentBranch}</code> as its upstream.</p>
               </>
-            ) : prompt === "Credentials" ? (
+            ) : prompt === "Authentication" ? (
               <div className="credential-form">
                 <Dropdown label="Remote" options={remotes.map((remote) => ({ value: remote, label: remote }))}
                   value={value} onChange={setValue} />
@@ -311,7 +314,7 @@ export function GitToolbar({
                 </label>
                 <label htmlFor="credential-access-token">Access token</label>
                 <div className="repository-action-field credential-token-field">
-                  <KeyRound size={15} aria-hidden="true" />
+                  <ShieldKeyhole size={15} aria-hidden="true" />
                   <input id="credential-access-token" type={showToken ? "text" : "password"} required
                     value={token} onChange={(event) => setToken(event.target.value)}
                     autoComplete="off" spellCheck={false} autoCapitalize="none"
@@ -430,9 +433,9 @@ export function GitToolbar({
               </button>
               <button
                 className="primary"
-                disabled={busy || (prompt !== "Stash" && !value.trim()) || value.trim() === renameBranch || (prompt === "Credentials" && (!username.trim() || !token.trim()))}
+                disabled={busy || (prompt !== "Stash" && !value.trim()) || value.trim() === renameBranch || (prompt === "Authentication" && (!username.trim() || !token.trim()))}
               >
-                {prompt === "Credentials" ? <><Save size={14} aria-hidden="true" /> Save credentials</> : prompt === "Publish"
+                {prompt === "Authentication" ? <><Save size={14} aria-hidden="true" /> Save authentication</> : prompt === "Publish"
                   ? <><ArrowUpCircle size={14} aria-hidden="true" /> Publish branch</>
                   : prompt === "Origin"
                   ? originUrl == null

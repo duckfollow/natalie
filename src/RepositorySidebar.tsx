@@ -1,3 +1,4 @@
+import { RepositorySettings } from "./RepositorySettings";
 import { buildBranchTree, type BranchFolder } from "./branch-tree";
 import { RepositoryInfo } from "./RepositoryInfo";
 import {
@@ -63,6 +64,7 @@ function Section({
 }
 
 export function RepositorySidebar({
+  root,
   view,
   collapsed,
   onExpand,
@@ -80,12 +82,15 @@ export function RepositorySidebar({
   onRenameBranch,
   onDeleteBranch,
   onDeleteTag,
+  onApplyStash,
+  onDeleteStash,
   busy,
   stashes,
   submodules,
   onView,
   onCommit,
 }: {
+  root: string;
   view: WorkspaceView;
   collapsed: boolean;
   onExpand: () => void;
@@ -100,6 +105,8 @@ export function RepositorySidebar({
   onPullPreview: (branch: string | null) => void;
   onRemoteBranch: (ref: Reference) => void;
   onDeleteTag: (tag: string) => void;
+  onApplyStash: (stash: Reference) => void;
+  onDeleteStash: (stash: Reference) => void;
   onRenameBranch: (branch: string) => void;
   onDeleteBranch: (branch: string) => void;
   onCheckoutBranch: (branch: string, remote?: string) => void;
@@ -111,6 +118,7 @@ export function RepositorySidebar({
 }) {
   const [menu, setMenu] = useState<{
     tag: boolean;
+    stash?: Reference;
     remote?: string;
     branch: string;
     x: number;
@@ -320,7 +328,25 @@ export function RepositorySidebar({
         </Section>
         <Section onExpand={expandSection} label="Stashes" icon={<Layers3 size={15} />}>
           {stashes.length ? (
-            stashes.map((ref) => refButton(ref))
+            stashes.map((ref) => {
+              const match = ref.name.match(/^(stash@\{(\d+)\}) · (?:(?:WIP on|On) ([^:]+): )?(.*)$/s);
+              const branchName = match?.[3];
+              const message = match?.[4]?.trim() || ref.name;
+              return <button type="button" key={ref.hash + ref.name} className="repo-reference repo-stash-row"
+                title={ref.name} aria-label={ref.name} onClick={() => onCommit(ref.hash)} aria-haspopup="menu"
+                onContextMenu={(event) => { event.preventDefault(); setMenu({ tag: false, stash: ref, branch: ref.name, trigger: event.currentTarget, x: event.clientX, y: event.clientY }); }}
+                onKeyDown={(event) => {
+                  if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
+                  event.preventDefault(); const bounds = event.currentTarget.getBoundingClientRect();
+                  setMenu({ tag: false, stash: ref, branch: ref.name, trigger: event.currentTarget, x: bounds.left, y: bounds.bottom });
+                }}>
+                <Layers3 className="repo-stash-icon" size={13} aria-hidden="true" />
+                <span className="repo-stash-content">
+                  <span className="repo-stash-message">{message}</span>
+                  <span className="repo-stash-meta">{branchName && <span className="repo-stash-branch"><GitBranch size={10} aria-hidden="true" /><span>{branchName}</span></span>}</span>
+                </span>
+              </button>;
+            })
           ) : (
             <small>No stashes</small>
           )}
@@ -333,7 +359,7 @@ export function RepositorySidebar({
           )}
         </Section>
       </div>
-      <RepositoryInfo />
+      <div className="repo-footer-tools"><RepositoryInfo /><RepositorySettings key={root} root={root} /></div>
       {menu && createPortal(
         <div
           ref={menuContainer}
@@ -362,7 +388,11 @@ export function RepositorySidebar({
           <div className="repo-menu-branch" aria-hidden="true" title={menu.remote ? `${menu.remote}/${menu.branch}` : menu.branch}>
             <span>{menu.remote ? `${menu.remote}/${menu.branch}` : menu.branch}</span>
           </div>
-          {!menu.tag && (
+          {menu.stash && <>
+            <button type="button" role="menuitem" tabIndex={-1} aria-disabled={busy} onClick={() => { if (busy) return; menu.trigger.focus(); setMenu(null); onApplyStash(menu.stash!); }}><Layers3 size={15} />Apply stash</button>
+            <button type="button" role="menuitem" className="repo-menu-delete" tabIndex={-1} aria-disabled={busy} onClick={() => { if (busy) return; menu.trigger.focus(); setMenu(null); onDeleteStash(menu.stash!); }}><Trash2 size={15} />Delete stash…</button>
+          </>}
+          {!menu.stash && !menu.tag && (
           <button
             tabIndex={-1}
             type="button"
@@ -379,7 +409,7 @@ export function RepositorySidebar({
             {branch === menu.branch ? "Already checked out" : "Checkout"}
           </button>
           )}
-          {!menu.remote && !menu.tag && (
+          {!menu.stash && !menu.remote && !menu.tag && (
             <button
               type="button"
               role="menuitem"
@@ -396,7 +426,7 @@ export function RepositorySidebar({
               Rename branch
             </button>
           )}
-          {!menu.remote && (
+          {!menu.stash && !menu.remote && (
             <button
               type="button"
               role="menuitem"

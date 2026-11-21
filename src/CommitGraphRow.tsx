@@ -40,6 +40,8 @@ export function CommitGraphRow({
   pushingHashes,
   rebaseHashes,
   isHead,
+  checkoutPulse,
+  onCheckoutPulseEnd,
 }: {
   row: ReturnType<typeof layoutHistory>["rows"][number];
   width: number;
@@ -55,6 +57,8 @@ export function CommitGraphRow({
   pushingHashes?: ReadonlySet<string>;
   rebaseHashes?: ReadonlySet<string>;
   isHead: boolean;
+  checkoutPulse?: number;
+  onCheckoutPulseEnd?: () => void;
   theme: "light" | "dark";
 }) {
   const colors = theme === "light" ? lightLaneColors : laneColors;
@@ -133,9 +137,10 @@ export function CommitGraphRow({
       >
         {isHead && (
           <span className="commit-head-crown" aria-hidden="true">
-            <Crown size={compact ? 10 : 13} fill="currentColor" />
+            <Crown size={compact ? 8 : 11} fill="currentColor" />
           </span>
         )}
+        {isHead && checkoutPulse != null && <span key={checkoutPulse} className="commit-checkout-pulse" onAnimationEnd={onCheckoutPulseEnd} />}
         {row.isMerge || compact ? null : initials}
       </span>
     </span>

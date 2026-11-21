@@ -1,3 +1,4 @@
+import { CommitIdentityDialog } from "./CommitIdentityDialog";
 import { CommitGenerateButton } from "./CommitGenerateButton";
 import { useGenerateCommitMessage } from "./use-generate-commit-message";
 import {
@@ -76,6 +77,7 @@ type Snapshot = {
   remote_branches: Reference[];
   recent_origin_branches: RecentOriginBranch[];
   origin_url: string | null;
+  commit_author: string | null;
   stashes: Reference[];
   submodules: string[];
   cherry_picking: boolean;
@@ -820,6 +822,7 @@ function App() {
   }, [notice, resetWarning]);
   const [error, setError] = useState("");
   const [pullingRoot, setPullingRoot] = useState<string | null>(null);
+  const [checkoutPulse, setCheckoutPulse] = useState<{ root: string; hash: string; id: number } | null>(null);
   const [graphSync, setGraphSync] = useState<{ root: string; hashes: Set<string> } | null>(null);
   useEffect(() => {
     if (!graphSync) return;
@@ -1042,7 +1045,7 @@ function App() {
       `[data-commit-hash="${CSS.escape(historyTarget.hash)}"]`,
     );
     if (row) {
-      row.scrollIntoView({ block: "nearest", inline: "nearest" });
+      row.scrollIntoView({ block: "center", inline: "nearest" });
       row.focus({ preventScroll: true });
       setHistoryScroll(null);
     }
@@ -1283,6 +1286,9 @@ function App() {
           setGraphSync(hashes.size ? { root: next.root, hashes } : null);
         }
         if ("kind" in action && (action.kind === "checkout_remote" || action.kind === "checkout_branch" || action.kind === "checkout_commit")) {
+          if (next.head && (repo?.head !== next.head || repo?.branch !== next.branch)) {
+            setCheckoutPulse({ root: next.root, hash: next.head, id: Date.now() });
+          }
           setHistoryBranch(null);
           setView("history");
           setHistoryListVisible(true);
@@ -1698,6 +1704,23 @@ function App() {
             <GitToolbar
               busy={busy}
               refreshing={refreshing}
+              authorControl={
+                <CommitIdentityDialog key={repo.root} identity={repo.commit_author} disabled={busy}
+                      onSave={async (name, email) => {
+                        let saved = false;
+                        let failure: unknown;
+                        await update(
+                          async () => {
+                            try {
+                              return await repository<Snapshot>(root, { kind: "set_commit_identity", name, email });
+                            } catch (error) { failure = error; throw error; }
+                          },
+                          () => { saved = true; setNotice("Commit author updated for this repository."); },
+                        );
+                        if (!saved) throw Error(failure ? String(failure) : "Could not save author. Try again.");
+                        return true;
+                      }} />
+              }
               branches={repo.branches.map(({ name }) => name)}
               currentBranch={repo.branch}
               remotes={repo.remotes}
@@ -1897,6 +1920,24 @@ function App() {
                 );
                 return approved ? repository<Snapshot>(root, { kind: "delete_tag", name }) : null;
               }, () => setNotice(`Deleted local tag ${name}.`));
+            }}
+            onApplyStash={(stash) => {
+              setView("changes"); setSelection(null);
+              void update(async () => {
+                try { return await repository<Snapshot>(root, { kind: "apply_stash", hash: stash.hash }); }
+                catch (failure) {
+                  const next = await repository<Snapshot>(null, { kind: "open", folder: root }).catch(() => null);
+                  if (next) setRepo(next);
+                  throw failure;
+                }
+              }, () => setNotice("Stash applied. The saved stash was kept."));
+            }}
+            onDeleteStash={(stash) => {
+              void update(async () => {
+                const approved = await confirm(`Delete "${stash.name}"? This permanently removes the saved stash.`,
+                  { title: "Delete stash", kind: "warning", okLabel: "Delete stash", cancelLabel: "Cancel" });
+                return approved ? repository<Snapshot>(root, { kind: "delete_stash", hash: stash.hash }) : null;
+              }, () => { setSelection(null); setNotice("Stash deleted."); });
             }}
             onRenameBranch={setRenameBranch}
             onDeleteBranch={(branch) => {
@@ -2177,6 +2218,8 @@ function App() {
                           pushingHashes={pushingHashes}
                           rebaseHashes={rebaseGraph && !locatingRebase ? rebaseHashes : undefined}
                           syncedHashes={graphSync?.root === repo.root ? graphSync.hashes : undefined}
+                          onCheckoutPulseEnd={() => setCheckoutPulse((current) => current?.id === checkoutPulse?.id ? null : current)}
+                          checkoutPulse={checkoutPulse?.root === repo.root && checkoutPulse.hash === commit.hash ? checkoutPulse.id : undefined}
                           isHead={commit.hash === repo.head}
                           author={commit.author}
                           theme={theme}

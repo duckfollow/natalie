@@ -70,7 +70,7 @@ export function RepositorySettings({ root }: { root: string }) {
           </div>
         </section>
       </div>
-      <footer className="repo-settings-footer"><span>View only · Repository overrides Global and System</span><span>Change author from the name beside Auth</span></footer>
+      <footer className="repo-settings-footer"><span>View only · Repository overrides Global and System</span><span>Identity and authentication are in the account menu</span></footer>
     </dialog>, document.body)}
   </>;
 }

@@ -556,6 +556,7 @@ enum Action {
     DiscardMany {
         paths: Vec<String>,
     },
+    StashPreview { hash: String },
     ApplyStash { hash: String },
     DeleteStash { hash: String },
     SetCommitIdentity { name: String, email: String },
@@ -661,6 +662,7 @@ enum Response {
     History(Vec<Commit>),
     ForcePushPlan(ForcePushPlan),
     RebasePreview(RebasePreview),
+    StashPreview(StashPreview),
 }
 
 fn validate_commit_hash(hash: &str) -> Result<(), String> {
@@ -991,6 +993,42 @@ fn check_soft_reset(root: &Path, hash: &str, branch: &str, head: &str) -> Result
     Ok(())
 }
 
+#[derive(Serialize)]
+struct StashPreviewFile { path: String, overlap: bool }
+#[derive(Serialize)]
+struct StashPreview {
+    files: Vec<StashPreviewFile>,
+    diff: String,
+    truncated: bool,
+    conflicts: bool,
+}
+
+fn stash_preview(root: &Path, hash: &str) -> Result<StashPreview, String> {
+    validate_commit_hash(hash)?;
+    let list = git(root, &["stash", "list", "--format=%H"])?;
+    if !list.lines().any(|entry| entry == hash) {
+        return Err("This stash changed or was removed. Refresh and try again.".into());
+    }
+    let changes = working_changes(root)?;
+    let names = git(root, &["stash", "show", "--include-untracked", "--name-only", "--no-renames", "-z", hash])?;
+    let files = names.split('\0').filter(|path| !path.is_empty()).map(|path| {
+        let overlap = changes.iter().any(|change| change.path == path
+            || change.path.starts_with(&format!("{path}/"))
+            || path.starts_with(&format!("{}/", change.path)));
+        StashPreviewFile { path: path.into(), overlap }
+    }).collect();
+    let mut diff = git(root, &["stash", "show", "--include-untracked", "--no-ext-diff", "--no-textconv", "--no-color", "--no-renames", "--patch", hash])?;
+    let truncated = diff.len() > 256 * 1024;
+    if truncated {
+        let mut end = 256 * 1024;
+        while !diff.is_char_boundary(end) { end -= 1; }
+        diff.truncate(end);
+    }
+    let conflicts = changes.iter().any(|change| change.index == 'U' || change.worktree == 'U'
+        || matches!((change.index, change.worktree), ('A', 'A') | ('D', 'D')));
+    Ok(StashPreview { files, diff, truncated, conflicts })
+}
+
 fn change_stash(root: &Path, hash: &str, delete: bool) -> Result<(), String> {
     let list = git(root, &["stash", "list", "--format=%H"])?;
     let index = list.lines().position(|entry| entry == hash)
@@ -1087,6 +1125,7 @@ fn perform(root: Option<String>, action: Action) -> Result<Response, String> {
                 snapshot(root).map(Response::Snapshot)
             }
         }
+        Action::StashPreview { hash } => stash_preview(root, &hash).map(Response::StashPreview),
         Action::CommitMessageContext => commit_message::context(root).map(Response::CommitMessageContext),
         Action::CheckCommitMessageIndex { tree, head, branch } => {
             commit_message::check_context(root, &tree, head.as_deref(), &branch)?;
@@ -1558,6 +1597,34 @@ mod tests {
         git(folder, &["config", "commit.gpgsign", "false"]).unwrap();
         git(folder, &["config", "core.hooksPath", "/dev/null"]).unwrap();
         repository
+    }
+
+    #[test]
+    fn stash_preview_includes_untracked_and_marks_overlaps_without_modifying_files() {
+        let repo = test_repository(); let root = repo.0.as_path();
+        std::fs::write(root.join("tracked.txt"), "base\n").unwrap();
+        git(root, &["add", "."]).unwrap(); git(root, &["commit", "-m", "base"]).unwrap();
+        std::fs::write(root.join("tracked.txt"), "saved edit\n").unwrap();
+        std::fs::write(root.join("new file.txt"), "saved new file\n").unwrap();
+        git(root, &["stash", "push", "--include-untracked", "-m", "preview"]).unwrap();
+        let hash = git(root, &["rev-parse", "refs/stash"]).unwrap().trim().to_owned();
+        let clean = stash_preview(root, &hash).unwrap();
+        assert_eq!(clean.files.len(), 2);
+        assert!(clean.files.iter().all(|file| !file.overlap));
+        assert!(clean.diff.contains("saved edit") && clean.diff.contains("saved new file"));
+        std::fs::write(root.join("tracked.txt"), "current edit\n").unwrap();
+        std::fs::write(root.join("new file.txt"), "current untracked\n").unwrap();
+        let before = git(root, &["status", "--porcelain"]).unwrap();
+        let preview = stash_preview(root, &hash).unwrap();
+        assert!(preview.files.iter().all(|file| file.overlap));
+        assert!(!preview.conflicts && !preview.truncated);
+        assert_eq!(git(root, &["status", "--porcelain"]).unwrap(), before);
+        assert_eq!(std::fs::read_to_string(root.join("tracked.txt")).unwrap(), "current edit\n");
+        assert_eq!(std::fs::read_to_string(root.join("new file.txt")).unwrap(), "current untracked\n");
+        assert_eq!(git(root, &["rev-parse", "refs/stash"]).unwrap().trim(), hash);
+        assert!(stash_preview(root, "--all").is_err());
+        change_stash(root, &hash, true).unwrap();
+        assert!(stash_preview(root, &hash).is_err());
     }
 
     #[test]

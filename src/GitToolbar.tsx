@@ -83,7 +83,7 @@ export function GitToolbar({
 }: {
   busy: boolean;
   refreshing: boolean;
-  authorControl?: ReactNode;
+  authorControl?: (onAuthentication: () => void) => ReactNode;
   branches: string[];
   currentBranch: string;
   remotes: string[];
@@ -141,7 +141,7 @@ export function GitToolbar({
       <div className="git-toolbar" role="group" aria-label="Git actions">
         {operationGroups.map(({ name, actions }) => (
           <div className="git-toolbar-group" role="group" aria-label={name} key={name}>
-            {actions.map(({ label, icon: Icon }) => (
+            {actions.filter(({ label }) => label !== "Authentication" || !authorControl).map(({ label, icon: Icon }) => (
               <button
                 key={label}
                 data-action={label === "Pull" ? "pull" : undefined}
@@ -218,7 +218,10 @@ export function GitToolbar({
                 )}
               </button>
             ))}
-            {name === "Remote settings" && authorControl}
+            {name === "Remote settings" && authorControl?.(() => {
+              setValue(remotes.includes("origin") ? "origin" : remotes[0] ?? "");
+              setPrompt("Authentication");
+            })}
             {name === "Remote sync" && canPush && hasUpstream && (ahead ?? 0) > 0 && (behind ?? 0) > 0 && (
               <button type="button" disabled={busy} onClick={onRebase} onMouseEnter={() => onRebasePreview(true)}
                 onMouseLeave={() => onRebasePreview(false)} onFocus={() => onRebasePreview(true)}

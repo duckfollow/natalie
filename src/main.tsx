@@ -1,3 +1,4 @@
+import { StashPreviewDialog } from "./StashPreviewDialog";
 import { CommitIdentityDialog } from "./CommitIdentityDialog";
 import { CommitGenerateButton } from "./CommitGenerateButton";
 import { useGenerateCommitMessage } from "./use-generate-commit-message";
@@ -822,6 +823,7 @@ function App() {
   }, [notice, resetWarning]);
   const [error, setError] = useState("");
   const [pullingRoot, setPullingRoot] = useState<string | null>(null);
+  const [stashReview, setStashReview] = useState<{ root: string; stash: Reference } | null>(null);
   const [checkoutPulse, setCheckoutPulse] = useState<{ root: string; hash: string; id: number } | null>(null);
   const [graphSync, setGraphSync] = useState<{ root: string; hashes: Set<string> } | null>(null);
   useEffect(() => {
@@ -1704,8 +1706,8 @@ function App() {
             <GitToolbar
               busy={busy}
               refreshing={refreshing}
-              authorControl={
-                <CommitIdentityDialog key={repo.root} identity={repo.commit_author} disabled={busy}
+              authorControl={(onAuthentication) =>
+                <CommitIdentityDialog key={repo.root} identity={repo.commit_author} disabled={busy} onAuthentication={onAuthentication} canAuthenticate={repo.remotes.length > 0}
                       onSave={async (name, email) => {
                         let saved = false;
                         let failure: unknown;
@@ -1788,6 +1790,23 @@ function App() {
           </div>
         </div>
       )}
+      {stashReview && stashReview.root === root && <StashPreviewDialog key={stashReview.root + stashReview.stash.hash}
+        root={stashReview.root} stash={stashReview.stash} disabled={busy}
+        onClose={() => setStashReview(null)}
+        onApply={async () => {
+          let applied = false;
+          await update(async () => {
+            setView("changes"); setSelection(null);
+            try { return await repository<Snapshot>(stashReview.root, { kind: "apply_stash", hash: stashReview.stash.hash }); }
+            catch (failure) {
+              const next = await repository<Snapshot>(null, { kind: "open", folder: stashReview.root }).catch(() => null);
+              if (next) setRepo(next);
+              setStashReview(null);
+              throw failure;
+            }
+          }, () => { applied = true; setStashReview(null); setNotice("Stash applied. The saved stash was kept."); });
+          return applied;
+        }} />}
       {error && !picker && (
         <div className="banner error" role="alert">
           <CircleAlert size={15} aria-hidden="true" /> <span>{error}</span>
@@ -1921,17 +1940,7 @@ function App() {
                 return approved ? repository<Snapshot>(root, { kind: "delete_tag", name }) : null;
               }, () => setNotice(`Deleted local tag ${name}.`));
             }}
-            onApplyStash={(stash) => {
-              setView("changes"); setSelection(null);
-              void update(async () => {
-                try { return await repository<Snapshot>(root, { kind: "apply_stash", hash: stash.hash }); }
-                catch (failure) {
-                  const next = await repository<Snapshot>(null, { kind: "open", folder: root }).catch(() => null);
-                  if (next) setRepo(next);
-                  throw failure;
-                }
-              }, () => setNotice("Stash applied. The saved stash was kept."));
-            }}
+            onApplyStash={(stash) => setStashReview({ root: repo.root, stash })}
             onDeleteStash={(stash) => {
               void update(async () => {
                 const approved = await confirm(`Delete "${stash.name}"? This permanently removes the saved stash.`,

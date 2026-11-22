@@ -3330,3 +3330,33 @@ button.image-preview-canvas:hover:not(:disabled) {
 @media (prefers-reduced-motion: no-preference) {
   .commit-checkout-pulse { animation: commit-checkout-arrive 3000ms cubic-bezier(.2, .65, .3, 1) 1; }
 }
+
+.account-settings-menu { width: 230px; }
+.account-settings-summary { display: grid; gap: 5px; padding: 10px 10px 12px; margin-bottom: 4px; border-bottom: 1px solid var(--line); min-width: 0; }
+.account-settings-summary strong { font-size: 12px; font-weight: 600; }
+.account-settings-summary span { color: var(--muted); font-size: 11px; }
+.account-settings-summary > * { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.stash-preview-dialog { width: min(900px, 94vw); overflow: hidden; }
+.stash-preview-body { height: min(570px, 62vh); padding: 20px; overflow-y: auto; }
+.stash-preview-summary { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 16px; }
+.stash-preview-summary > span { display: flex; align-items: center; gap: 7px; font-size: 13px; }
+.stash-preview-summary small, .stash-preview-note { color: var(--muted); font-size: 11px; }
+.stash-preview-warning { display: flex; align-items: start; gap: 8px; padding: 12px; margin-bottom: 14px; border-radius: 8px; background: var(--active); color: var(--error); font-size: 12px; line-height: 1.6; }
+.stash-preview-warning svg { flex: none; margin-top: 2px; }
+.stash-preview-files { display: grid; gap: 6px; margin-bottom: 18px; }
+.stash-preview-files > div { display: flex; align-items: center; gap: 7px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px; font-size: 11px; min-width: 0; }
+.stash-preview-files svg { flex: none; color: var(--muted); }
+.stash-preview-files > div > span { overflow-wrap: anywhere; min-width: 0; }
+.stash-preview-files small { flex: none; margin-left: auto; color: var(--error); font-size: 10px; }
+.stash-preview-diff { overflow: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+.stash-preview-diff pre { margin: 0; padding: 14px; font: 11px/1.7 ui-monospace, monospace; tab-size: 4; }
+.stash-diff-added { color: var(--status-added); }
+.stash-diff-removed { color: var(--error); }
+.stash-diff-hunk { color: var(--accent); }
+.stash-preview-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 14px; padding: 14px 18px; border-top: 1px solid var(--line); }
+.stash-preview-footer > span { flex: 1; min-width: 170px; color: var(--muted); font-size: 11px; line-height: 1.6; }
+.stash-preview-footer > div { display: flex; gap: 8px; }
+.stash-preview-footer button { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; }
+.stash-preview-loading { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
+@media (prefers-reduced-motion: no-preference) { .stash-preview-loading svg, .stash-preview-footer .primary svg.lucide-loader-circle { animation: commit-identity-spin 1s linear infinite; } }

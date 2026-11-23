@@ -1,3 +1,5 @@
+import { RemoteCheckoutActions } from "./RemoteCheckoutActions";
+import { centerHistoryRow } from "./scroll-history";
 import { StashPreviewDialog } from "./StashPreviewDialog";
 import { CommitIdentityDialog } from "./CommitIdentityDialog";
 import { CommitGenerateButton } from "./CommitGenerateButton";
@@ -822,8 +824,10 @@ function App() {
     return () => window.clearTimeout(timer);
   }, [notice, resetWarning]);
   const [error, setError] = useState("");
+  const [networkOperation, setNetworkOperation] = useState<"pull" | "push" | "fetch" | null>(null);
   const [pullingRoot, setPullingRoot] = useState<string | null>(null);
   const [stashReview, setStashReview] = useState<{ root: string; stash: Reference } | null>(null);
+  const pendingCheckoutPulse = useRef<{ root: string; hash: string; id: number } | null>(null);
   const [checkoutPulse, setCheckoutPulse] = useState<{ root: string; hash: string; id: number } | null>(null);
   const [graphSync, setGraphSync] = useState<{ root: string; hashes: Set<string> } | null>(null);
   useEffect(() => {
@@ -1041,13 +1045,23 @@ function App() {
   const selectedCommit = diffSelection?.kind === "show"
     ? commits?.find(({ hash }) => hash === diffSelection.hash)
     : undefined;
+  const cancelHistoryScroll = useRef<(() => void) | null>(null);
+  useLayoutEffect(() => () => { cancelHistoryScroll.current?.(); }, [root, view]);
   useLayoutEffect(() => {
     if (view !== "history" || !historyTarget) return;
     const row = listPanel.current?.querySelector<HTMLButtonElement>(
       `[data-commit-hash="${CSS.escape(historyTarget.hash)}"]`,
     );
     if (row) {
-      row.scrollIntoView({ block: "center", inline: "nearest" });
+      cancelHistoryScroll.current?.();
+      const scroller = row.closest<HTMLElement>(".history");
+      const arrival = pendingCheckoutPulse.current;
+      pendingCheckoutPulse.current = null;
+      const onArrive = () => {
+        if (arrival?.root === root && arrival.hash === historyTarget.hash) setCheckoutPulse(arrival);
+      };
+      if (scroller) cancelHistoryScroll.current = centerHistoryRow(scroller, row, onArrive);
+      else { row.scrollIntoView({ block: "center", inline: "nearest" }); onArrive(); }
       row.focus({ preventScroll: true });
       setHistoryScroll(null);
     }
@@ -1244,6 +1258,8 @@ function App() {
     const isPush = "kind" in action && (action.kind === "push" || action.kind === "publish_branch");
     void update(
       async () => {
+        const networkKind = isPull ? "pull" : isPush ? "push" : "kind" in action && action.kind === "fetch" ? "fetch" : null;
+        if (networkKind) setNetworkOperation(networkKind);
         if (isPull) setPullingRoot(root);
         if (isPush && repo?.head) {
           const reachable = new Set([repo.head]);
@@ -1273,6 +1289,7 @@ function App() {
           }
           throw failure;
         } finally {
+          if (networkKind) setNetworkOperation(null);
           if (isPull) setPullingRoot(null);
           if (isPush) setPushingHashes(undefined);
         }
@@ -1289,7 +1306,8 @@ function App() {
         }
         if ("kind" in action && (action.kind === "checkout_remote" || action.kind === "checkout_branch" || action.kind === "checkout_commit")) {
           if (next.head && (repo?.head !== next.head || repo?.branch !== next.branch)) {
-            setCheckoutPulse({ root: next.root, hash: next.head, id: Date.now() });
+            setCheckoutPulse(null);
+            pendingCheckoutPulse.current = { root: next.root, hash: next.head, id: Date.now() };
           }
           setHistoryBranch(null);
           setView("history");
@@ -1558,6 +1576,9 @@ function App() {
                     <GitCommitHorizontal size={14} aria-hidden="true" />
                     Checkout commit
                   </button>
+                  <RemoteCheckoutActions hash={hash} references={repo.remote_branches} branches={repo.branches}
+                    currentBranch={repo.branch} disabled={busy || repo.cherry_picking || repo.rebasing}
+                    onCheckout={(branch) => runGitAction({ kind: "checkout_remote", remote: "origin", branch }, `Checked out ${branch} from origin.`)} />
                   <button
                     type="button"
                     disabled={busy || repo.cherry_picking}
@@ -1706,6 +1727,7 @@ function App() {
             <GitToolbar
               busy={busy}
               refreshing={refreshing}
+              networkOperation={networkOperation ?? (refreshing ? "fetch" : null)}
               authorControl={(onAuthentication) =>
                 <CommitIdentityDialog key={repo.root} identity={repo.commit_author} disabled={busy} onAuthentication={onAuthentication} canAuthenticate={repo.remotes.length > 0}
                       onSave={async (name, email) => {

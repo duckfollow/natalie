@@ -437,6 +437,8 @@ main:has(.repo-navigation [data-pull-count]:hover) [data-branch-pull-preview="tr
   border: 0;
 }
 .commit-graph {
+  -webkit-user-select: none;
+  user-select: none;
   position: relative;
   flex: none;
 }
@@ -3360,3 +3362,61 @@ button.image-preview-canvas:hover:not(:disabled) {
 .stash-preview-footer button { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; }
 .stash-preview-loading { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
 @media (prefers-reduced-motion: no-preference) { .stash-preview-loading svg, .stash-preview-footer .primary svg.lucide-loader-circle { animation: commit-identity-spin 1s linear infinite; } }
+
+@keyframes commit-crown-arrive {
+  from { opacity: 0; transform: translate(-50%, 2px) scale(.9); }
+  to { opacity: 1; transform: translate(-50%, 0) scale(1); }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .history button[data-head="true"] .commit-head-crown { animation: commit-crown-arrive 450ms cubic-bezier(.22, 1, .36, 1); }
+  .repo-nav-items .repo-reference { transition: background-color 300ms ease, color 300ms ease; }
+  .history > button { transition: background-color 260ms ease; }
+}
+
+.git-toolbar button[data-network-active="true"] { opacity: 1; }
+@keyframes toolbar-transfer-up {
+  0%, 15% { transform: translateY(2px); opacity: 0; }
+  35%, 60% { opacity: 1; }
+  85%, 100% { transform: translateY(-2px); opacity: 0; }
+}
+@keyframes toolbar-transfer-down {
+  0%, 15% { transform: translateY(-2px); opacity: 0; }
+  35%, 60% { opacity: 1; }
+  85%, 100% { transform: translateY(2px); opacity: 0; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .git-toolbar button[data-network-active="true"][data-action="push"] .toolbar-transfer-arrow { animation: toolbar-transfer-up 1600ms cubic-bezier(.4, 0, .2, 1) infinite; }
+  .git-toolbar button[data-network-active="true"]:is([data-action="pull"], [data-action="fetch"]) .toolbar-transfer-arrow { animation: toolbar-transfer-down 1600ms cubic-bezier(.4, 0, .2, 1) infinite; }
+}
+
+.commit-checkout-origin > span { display: grid; gap: 3px; min-width: 0; text-align: left; }
+.checkout-origin-branch { color: var(--muted); font-size: 10px; font-weight: 400; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 240px; }
+
+/* Controls should behave like desktop UI; keep document content copyable. */
+button,
+[role="option"],
+[role="separator"],
+.repo-nav-section > summary,
+.repo-branch-folder > summary,
+.diff-commit-menu > summary,
+.status,
+.commit-ref,
+.merge-badge,
+.pending-pick-marker {
+  -webkit-user-select: none;
+  user-select: none;
+}
+.history .commit-details,
+.file-path,
+.repo-list-details,
+input,
+textarea,
+[contenteditable="true"] {
+  -webkit-user-select: text;
+  user-select: text;
+}
+.history .commit-ref,
+.history .merge-badge {
+  -webkit-user-select: none;
+  user-select: none;
+}

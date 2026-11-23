@@ -56,11 +56,21 @@ const operationGroups = [
   ] },
 ] as const;
 
+function TransferIcon({ action }: { action: "Push" | "Pull" | "Fetch" }) {
+  return <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    {action === "Fetch" ? <path d="M7 17a5 5 0 1 1 2-9.6A6 6 0 0 1 21 10a4 4 0 0 1-1 7.8" /> : <circle cx="12" cy="12" r="10" />}
+    <g className="toolbar-transfer-arrow">
+      {action === "Push" ? <><path d="M12 16V8" /><path d="m8 12 4-4 4 4" /></> : action === "Pull" ? <><path d="M12 8v8" /><path d="m8 12 4 4 4-4" /></> : <><path d="M12 12v9" /><path d="m8 17 4 4 4-4" /></>}
+    </g>
+  </svg>;
+}
+
 type Prompt = "Publish" | "Branch" | "Merge" | "Stash" | "Origin" | "Authentication";
 
 export function GitToolbar({
   busy,
   refreshing,
+  networkOperation,
   authorControl,
   branches,
   currentBranch,
@@ -83,6 +93,7 @@ export function GitToolbar({
 }: {
   busy: boolean;
   refreshing: boolean;
+  networkOperation?: "pull" | "push" | "fetch" | null;
   authorControl?: (onAuthentication: () => void) => ReactNode;
   branches: string[];
   currentBranch: string;
@@ -144,7 +155,9 @@ export function GitToolbar({
             {actions.filter(({ label }) => label !== "Authentication" || !authorControl).map(({ label, icon: Icon }) => (
               <button
                 key={label}
-                data-action={label === "Pull" ? "pull" : undefined}
+                data-action={label === "Pull" || label === "Push" || label === "Fetch" ? label.toLowerCase() : undefined}
+                data-network-active={networkOperation === label.toLowerCase() || undefined}
+                aria-busy={networkOperation === label.toLowerCase() || undefined}
                 type="button"
                 title={
                   label === "Pull" ? "Pull using fast-forward only"
@@ -198,7 +211,7 @@ export function GitToolbar({
                 }}
               >
                 <span className="git-toolbar-icon">
-                  <Icon size={20} aria-hidden="true" />
+                  {label === "Push" || label === "Pull" || label === "Fetch" ? <TransferIcon action={label} /> : <Icon size={20} aria-hidden="true" />}
                 </span>
                 {label === "Authentication" ? "Auth" : label}
                 {label === "Commit" && changes > 0 && (

@@ -80,6 +80,7 @@ type Snapshot = {
   remote_branches: Reference[];
   recent_origin_branches: RecentOriginBranch[];
   origin_url: string | null;
+  origin_embedded_credentials: boolean;
   commit_author: string | null;
   stashes: Reference[];
   submodules: string[];
@@ -1758,7 +1759,9 @@ function App() {
                 setTagCommit(null);
                 setRenameBranch(null);
               }}
+              repositoryRoot={repo.root}
               originUrl={repo.origin_url}
+              originEmbeddedCredentials={repo.origin_embedded_credentials}
               ahead={repo.ahead}
               behind={repo.behind}
               changes={repo.changes.length}
@@ -1794,6 +1797,7 @@ function App() {
                 runGitAction(
                   action,
                   {
+                    migrate_origin_credential: "Origin authentication moved to Keychain and URL cleaned.",
                     save_https_credential: "HTTPS credentials saved. Try Push again.",
                     set_origin: "Origin updated. Fetch to refresh remote commits.",
                     fetch: "Fetch completed.",

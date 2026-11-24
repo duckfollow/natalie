@@ -74,6 +74,7 @@ struct Snapshot {
     remote_branches: Vec<Reference>,
     recent_origin_branches: Vec<RecentOriginBranch>,
     origin_url: Option<String>,
+    origin_embedded_credentials: bool,
     commit_author: Option<String>,
     stashes: Vec<Reference>,
     submodules: Vec<String>,
@@ -446,9 +447,10 @@ fn snapshot(folder: &Path) -> Result<Snapshot, String> {
         "--format=%(objectname)%00%(refname:strip=2)%00%(symref)",
         "refs/remotes",
     ])?;
-    let origin_url = git(path, &["config", "--get", "remote.origin.url"])
-        .ok()
-        .map(|url| url.trim_end().to_owned());
+    let raw_origin = git(path, &["config", "--get", "remote.origin.url"]).ok();
+    let raw_push = git(path, &["remote", "get-url", "--push", "origin"]).ok();
+    let origin_embedded_credentials = raw_origin.iter().chain(raw_push.iter()).any(|url| remote_url_display(url.trim_end()).1);
+    let origin_url = raw_origin.map(|url| remote_url_display(url.trim_end()).0);
     let stashes = references(&["stash", "list", "--format=%H%x00%gd · %gs"])?;
     let mut submodules: Vec<_> = git(path, &["ls-files", "--stage", "-z"])?
         .split('\0')
@@ -484,6 +486,7 @@ fn snapshot(folder: &Path) -> Result<Snapshot, String> {
         remote_branches,
         recent_origin_branches,
         origin_url,
+        origin_embedded_credentials,
         commit_author,
         stashes,
         submodules,
@@ -506,6 +509,7 @@ enum ConflictResolution {
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum Action {
+    RevealOriginUrls,
     CommitMessageContext,
     CheckCommitMessageIndex { tree: String, head: Option<String>, branch: String },
     Open {
@@ -568,6 +572,7 @@ enum Action {
         username: String,
         token: String,
     },
+    MigrateOriginCredential { username: String, token: String, expected_url: String },
     SetOrigin {
         url: String,
     },
@@ -663,6 +668,7 @@ enum Response {
     ForcePushPlan(ForcePushPlan),
     RebasePreview(RebasePreview),
     StashPreview(StashPreview),
+    OriginUrls(OriginUrls),
 }
 
 fn validate_commit_hash(hash: &str) -> Result<(), String> {
@@ -879,6 +885,75 @@ fn git_with_input(root: &Path, args: &[&str], input: &[u8]) -> Result<(), String
         .write_all(input);
     output(child.wait_with_output().map_err(|error| error.to_string())?, false)?;
     write.map_err(|error| error.to_string())
+}
+
+#[derive(Serialize)]
+struct OriginUrls { fetch_url: String, push_url: String }
+
+fn reveal_origin_urls(root: &Path) -> Result<OriginUrls, String> {
+    let fetch_url = git(root, &["config", "--get", "remote.origin.url"]).map_err(|_| "Could not read origin URL.")?;
+    let push_url = git(root, &["remote", "get-url", "--push", "--all", "origin"]).map_err(|_| "Could not read origin push URL.")?;
+    Ok(OriginUrls { fetch_url: fetch_url.trim_end().into(), push_url: push_url.trim_end().into() })
+}
+
+fn remote_url_display(value: &str) -> (String, bool) {
+    if !(value.to_ascii_lowercase().starts_with("https://") || value.to_ascii_lowercase().starts_with("http://")) {
+        return (value.into(), false);
+    }
+    let Ok(mut url) = reqwest::Url::parse(value) else { return ("••••".into(), true); };
+    let embedded = !url.username().is_empty() || url.password().is_some() || url.query().is_some() || url.fragment().is_some();
+    let _ = url.set_username(""); let _ = url.set_password(None);
+    url.set_query(None); url.set_fragment(None);
+    (url.to_string(), embedded)
+}
+
+fn migrate_origin_credential(root: &Path, username: &str, token: &str, expected_url: &str) -> Result<(), String> {
+    migrate_origin_with(root, username, token, expected_url, |url| {
+        let input = format!("url={url}\nusername={username}\npassword={token}\n\n");
+        git_with_input(root, &["-c", "credential.helper=", "-c", "credential.helper=osxkeychain", "-c", "credential.useHttpPath=true", "credential", "approve"], input.as_bytes())
+            .map_err(|_| "Could not save to macOS Keychain. Origin was not changed.".to_owned())
+    })
+}
+
+fn migrate_origin_with(root: &Path, username: &str, token: &str, expected_url: &str, approve: impl FnOnce(&reqwest::Url) -> Result<(), String>) -> Result<(), String> {
+    if [username, token].iter().any(|value| value.trim().is_empty() || value.contains(['\n', '\r', '\0'])) {
+        return Err("Enter a username and access token without line breaks.".into());
+    }
+    let raw = git(root, &["config", "--local", "--get-all", "remote.origin.url"])?;
+    let urls: Vec<_> = raw.lines().collect();
+    if urls.len() != 1 { return Err("Configure a single local origin URL before moving authentication.".into()); }
+    let (clean, _) = remote_url_display(urls[0]);
+    if clean != expected_url { return Err("Origin changed. Close this dialog and review it again.".into()); }
+    let url = https_credential_url(&clean)?;
+    let push = git(root, &["remote", "get-url", "--push", "--all", "origin"])?;
+    if push.lines().count() != 1 { return Err("Configure a single push URL before moving authentication.".into()); }
+    if remote_url_display(push.trim_end()).0 != clean {
+        return Err("Origin uses a different push URL. Configure authentication for that endpoint separately.".into());
+    }
+    let pushes = git(root, &["config", "--local", "--get-all", "remote.origin.pushurl"]).unwrap_or_default();
+    if pushes.lines().count() > 1 { return Err("Configure a single push URL before moving authentication.".into()); }
+    let directory = git(root, &["rev-parse", "--path-format=absolute", "--git-common-dir"])?;
+    let config = Path::new(directory.trim_end()).join("config");
+    let lock = config.with_extension("lock");
+    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&lock)
+        .map_err(|_| "Git configuration is locked. Try again after other Git operations finish.")?;
+    let result = (|| {
+        file.write_all(&std::fs::read(&config).map_err(|_| "Could not read Git configuration.")?).map_err(|_| "Could not prepare Git configuration.")?;
+        std::fs::set_permissions(&lock, std::fs::metadata(&config).map_err(|_| "Could not read Git configuration permissions.")?.permissions()).map_err(|_| "Could not preserve Git configuration permissions.")?;
+        let path = lock.to_str().ok_or("Git config path is not valid UTF-8.")?;
+        let set = |key: &str, value: &str| git(root, &["config", "--file", path, "--replace-all", key, value]).map_err(|_| "Could not prepare authentication settings.");
+        set("remote.origin.url", &clean)?;
+        if !pushes.is_empty() || remote_url_display(push.trim_end()).1 { set("remote.origin.pushurl", &clean)?; }
+        let scope = format!("credential.{url}");
+        set(&format!("{scope}.useHttpPath"), "true")?;
+        set(&format!("{scope}.username"), username)?;
+        set(&format!("{scope}.helper"), "")?;
+        git(root, &["config", "--file", path, "--add", &format!("{scope}.helper"), "osxkeychain"]).map_err(|_| "Could not prepare Keychain settings.")?;
+        approve(&url)?;
+        std::fs::rename(&lock, &config).map_err(|_| "Authentication saved, but could not update origin. Retry to finish.".to_owned())
+    })();
+    if result.is_err() { let _ = std::fs::remove_file(lock); }
+    result
 }
 
 fn https_credential_url(value: &str) -> Result<reqwest::Url, String> {
@@ -1125,6 +1200,7 @@ fn perform(root: Option<String>, action: Action) -> Result<Response, String> {
                 snapshot(root).map(Response::Snapshot)
             }
         }
+        Action::RevealOriginUrls => reveal_origin_urls(root).map(Response::OriginUrls),
         Action::StashPreview { hash } => stash_preview(root, &hash).map(Response::StashPreview),
         Action::CommitMessageContext => commit_message::context(root).map(Response::CommitMessageContext),
         Action::CheckCommitMessageIndex { tree, head, branch } => {
@@ -1299,6 +1375,7 @@ fn perform(root: Option<String>, action: Action) -> Result<Response, String> {
                 Action::SaveHttpsCredential { remote, username, token } => {
                     save_https_credential(root, &remote, &username, &token)?;
                 }
+                Action::MigrateOriginCredential { username, token, expected_url } => { migrate_origin_credential(root, &username, &token, &expected_url)?; }
                 Action::SetOrigin { url } => {
                     let url = url.trim();
                     if url.is_empty() || url.starts_with('-') || url.chars().any(char::is_control) {
@@ -1597,6 +1674,45 @@ mod tests {
         git(folder, &["config", "commit.gpgsign", "false"]).unwrap();
         git(folder, &["config", "core.hooksPath", "/dev/null"]).unwrap();
         repository
+    }
+
+    #[test]
+    fn origin_url_display_hides_credentials_but_preserves_ssh_addresses() {
+        for input in ["https://user:secret@example.com/repo.git", "https://secret@example.com/repo.git", "https://example.com/repo.git?token=secret#secret"] {
+            let (display, embedded) = remote_url_display(input);
+            assert!(embedded);
+            assert_eq!(display, "https://example.com/repo.git");
+        }
+        assert_eq!(remote_url_display("git@example.com:team/repo.git"), ("git@example.com:team/repo.git".into(), false));
+        assert!(!remote_url_display("https://example.com/repo.git").1);
+        assert_eq!(remote_url_display("https://user:secret@[bad/repo"), ("••••".into(), true));
+    }
+
+    #[test]
+    fn migrating_origin_is_reviewed_atomic_and_never_stores_the_token_in_config() {
+        let repo = test_repository(); let root = repo.0.as_path();
+        git(root, &["remote", "add", "origin", "https://user:old-secret@example.com/repo.git"]).unwrap();
+        git(root, &["config", "remote.origin.pushurl", "https://user:push-secret@example.com/repo.git"]).unwrap();
+        let config = root.join(".git/config");
+        let before = std::fs::read(&config).unwrap();
+        let clean = "https://example.com/repo.git";
+        let snap = serde_json::to_string(&snapshot(root).unwrap()).unwrap();
+        assert!(!snap.contains("old-secret") && !snap.contains("push-secret"));
+        let revealed = reveal_origin_urls(root).unwrap();
+        assert!(revealed.fetch_url.contains("old-secret"));
+        assert!(revealed.push_url.contains("push-secret"));
+        assert!(snap.contains("\"origin_embedded_credentials\":true"));
+        assert!(migrate_origin_with(root, "user", "new-secret", "https://other/repo", |_| panic!("stale origin must not approve")).is_err());
+        assert!(migrate_origin_with(root, "user", "new-secret", clean, |_| Err("mock keychain failure".into())).is_err());
+        assert_eq!(std::fs::read(&config).unwrap(), before);
+        assert!(!root.join(".git/config.lock").exists());
+        migrate_origin_with(root, "user", "new-secret", clean, |url| { assert_eq!(url.as_str(), clean); Ok(()) }).unwrap();
+        assert_eq!(git(root, &["remote", "get-url", "origin"]).unwrap().trim(), clean);
+        assert_eq!(git(root, &["remote", "get-url", "--push", "origin"]).unwrap().trim(), clean);
+        let after = std::fs::read_to_string(&config).unwrap();
+        assert!(!after.contains("secret"));
+        assert!(after.contains("osxkeychain"));
+        assert!(!snapshot(root).unwrap().origin_embedded_credentials);
     }
 
     #[test]

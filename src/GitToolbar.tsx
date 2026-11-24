@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { Dropdown } from "./Dropdown";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import {
+  TriangleAlert,
   ArrowDown,
   ArrowDownCircle,
   ArrowUpCircle,
@@ -10,6 +11,7 @@ import {
   ExternalLink,
   Eye,
   EyeOff,
+  LoaderCircle,
   LockKeyhole,
   UserRound,
   GitBranch,
@@ -34,6 +36,7 @@ export type GitAction =
   | { kind: "merge"; branch: string }
   | { kind: "stash"; message: string }
   | { kind: "set_origin"; url: string }
+  | { kind: "migrate_origin_credential"; username: string; token: string; expected_url: string }
   | { kind: "save_https_credential"; remote: string; username: string; token: string };
 
 const operationGroups = [
@@ -81,7 +84,9 @@ export function GitToolbar({
   branchCommit,
   renameBranch,
   onPromptClose,
+  repositoryRoot,
   originUrl,
+  originEmbeddedCredentials = false,
   ahead,
   behind,
   changes,
@@ -104,7 +109,9 @@ export function GitToolbar({
   branchCommit: string | null;
   renameBranch: string | null;
   onPromptClose: () => void;
+  repositoryRoot?: string;
   originUrl: string | null;
+  originEmbeddedCredentials?: boolean;
   ahead: number | null;
   behind: number | null;
   changes: number;
@@ -118,14 +125,39 @@ export function GitToolbar({
   const [value, setValue] = useState("");
   const [username, setUsername] = useState("");
   const [token, setToken] = useState("");
+  const [revealedOrigin, setRevealedOrigin] = useState<{ fetch_url: string; push_url: string } | null>(null);
+  const [originDraft, setOriginDraft] = useState<string | null>(null);
+  const [originOriginal, setOriginOriginal] = useState<string | null>(null);
+  const [revealingOrigin, setRevealingOrigin] = useState(false);
+  const [originRevealError, setOriginRevealError] = useState("");
+  const originRevealRequest = useRef(0);
+  function hideOrigin() {
+    originRevealRequest.current += 1;
+    setRevealedOrigin(null); setRevealingOrigin(false); setOriginRevealError("");
+  }
+  useEffect(() => { hideOrigin(); setOriginDraft(null); setOriginOriginal(null); }, [repositoryRoot, originUrl]);
+  useEffect(() => () => { originRevealRequest.current += 1; }, []);
+  async function toggleOriginVisibility() {
+    if (revealedOrigin) { hideOrigin(); return; }
+    const request = ++originRevealRequest.current;
+    setRevealingOrigin(true); setOriginRevealError("");
+    try {
+      const urls = await invoke<{ fetch_url: string; push_url: string }>("repository", { root: repositoryRoot, action: { kind: "reveal_origin_urls" } });
+      if (request === originRevealRequest.current) { setRevealedOrigin(urls); setOriginOriginal(urls.fetch_url); }
+    } catch { if (request === originRevealRequest.current) setOriginRevealError("Could not reveal origin URL. Please try again."); }
+    finally { if (request === originRevealRequest.current) setRevealingOrigin(false); }
+  }
+  const [migratingOrigin, setMigratingOrigin] = useState(false);
   const [showToken, setShowToken] = useState(false);
   const [tokenHelpError, setTokenHelpError] = useState("");
   const prompt = renameBranch ? "Rename" : tagCommit ? "Tag" : branchCommit ? "Branch" : toolbarPrompt;
   function closePrompt() {
+    hideOrigin(); setOriginDraft(null); setOriginOriginal(null);
     setValue("");
     setUsername("");
     setToken("");
     setShowToken(false);
+    setMigratingOrigin(false);
     setTokenHelpError("");
     setPrompt(null);
     onPromptClose();
@@ -214,6 +246,7 @@ export function GitToolbar({
                   {label === "Push" || label === "Pull" || label === "Fetch" ? <TransferIcon action={label} /> : <Icon size={20} aria-hidden="true" />}
                 </span>
                 {label === "Authentication" ? "Auth" : label}
+                {label === "Origin" && originEmbeddedCredentials && <span className="origin-auth-dot" role="img" aria-label="Embedded authentication in origin URL" title="Embedded authentication found. Move it to Keychain." />}
                 {label === "Commit" && changes > 0 && (
                   <small className="git-toolbar-count" aria-label={`${changes} changed files`}>
                     {changes}
@@ -296,10 +329,10 @@ export function GitToolbar({
               if (prompt === "Stash")
                 onAction({ kind: "stash", message: value });
               if (prompt === "Origin")
-                onAction({ kind: "set_origin", url: value.trim() });
+                onAction({ kind: "set_origin", url: (originDraft ?? value).trim() });
               if (prompt === "Authentication") {
                 if (!remotes.includes(value) || !username.trim() || !token.trim()) return;
-                onAction({ kind: "save_https_credential", remote: value, username: username.trim(), token });
+                onAction(migratingOrigin ? { kind: "migrate_origin_credential", username: username.trim(), token, expected_url: originUrl ?? "" } : { kind: "save_https_credential", remote: value, username: username.trim(), token });
               }
               closePrompt();
             }}
@@ -317,8 +350,9 @@ export function GitToolbar({
               </>
             ) : prompt === "Authentication" ? (
               <div className="credential-form">
+                {migratingOrigin && <div className="origin-auth-warning"><TriangleAlert size={16} /><div><strong>Move origin authentication to Keychain</strong><p>Enter the username and access token to use. After saving successfully, embedded authentication is removed from the origin fetch and matching push URL.</p><code>{originUrl}</code></div></div>}
                 <Dropdown label="Remote" options={remotes.map((remote) => ({ value: remote, label: remote }))}
-                  value={value} onChange={setValue} />
+                  value={value} onChange={setValue} disabled={migratingOrigin} />
                 <label>
                   Username
                   <span className="repository-action-field">
@@ -334,19 +368,21 @@ export function GitToolbar({
                   <input id="credential-access-token" type={showToken ? "text" : "password"} required
                     value={token} onChange={(event) => setToken(event.target.value)}
                     autoComplete="off" spellCheck={false} autoCapitalize="none"
-                    placeholder="Paste access token" aria-describedby="credential-storage-note" />
+                    placeholder="Paste access token" aria-describedby="credential-token-hint credential-storage-note" />
                   <button type="button" onClick={() => setShowToken((visible) => !visible)}
+                    aria-pressed={showToken}
                     aria-label={showToken ? "Hide access token" : "Show access token"}
                     title={showToken ? "Hide access token" : "Show access token"}>
                     {showToken ? <EyeOff size={15} aria-hidden="true" /> : <Eye size={15} aria-hidden="true" />}
                   </button>
                 </div>
+                <p id="credential-token-hint" className="credential-token-hint">Use an access token instead of your account password. Choose your provider below for setup instructions.</p>
                 <p id="credential-storage-note" className="credential-storage-note">
                   <LockKeyhole size={13} aria-hidden="true" />
                   Saved in macOS Keychain for this remote’s HTTPS push URL.
                 </p>
-                <details className="credential-token-help">
-                  <summary>Where do I get a token?</summary>
+                <details className="credential-token-help" open>
+                  <summary>Create an access token</summary>
                   <div className="credential-provider">
                     <button type="button" onClick={() => void openTokenSetup("github")}>
                       <span className="credential-brand" data-provider="github" aria-hidden="true" />
@@ -383,23 +419,34 @@ export function GitToolbar({
                 </div>
               </div>
             ) : prompt === "Origin" ? (
+              <>
+              {originEmbeddedCredentials && <div className="origin-auth-warning" role="status"><TriangleAlert size={16} /><div><strong>Authentication found in origin URL</strong><p>Secret URL values are hidden. Store authentication in macOS Keychain instead. This does not verify whether the token works.</p><button type="button" onClick={() => { hideOrigin(); setMigratingOrigin(true); setUsername(""); setToken(""); setShowToken(false); setValue("origin"); setPrompt("Authentication"); }}>Move to Authentication…</button></div></div>}
               <label>
                 Repository URL
-                <span className="repository-action-field">
+                <span className="repository-action-field credential-token-field">
                   <Link2 size={15} aria-hidden="true" />
                   <input
                     autoFocus
-                    value={value}
-                    onChange={(event) => setValue(event.target.value)}
+                    value={revealedOrigin ? originDraft ?? revealedOrigin.fetch_url : value}
+                    onChange={(event) => { if (revealedOrigin) setOriginDraft(event.target.value); else { setValue(event.target.value); setOriginDraft(null); } }}
+                    autoComplete="off"
                     aria-describedby="origin-url-help"
                     required
                     spellCheck={false}
                     autoCapitalize="none"
                     placeholder="https://github.com/owner/repository.git"
                   />
+                  {originEmbeddedCredentials && <button type="button" disabled={revealingOrigin} onClick={() => void toggleOriginVisibility()}
+                    aria-label={revealedOrigin ? "Hide origin credentials" : "Show origin credentials"} title={revealedOrigin ? "Hide origin credentials" : "Show origin credentials"} aria-pressed={revealedOrigin !== null}>
+                    {revealingOrigin ? <LoaderCircle size={15} className="spin" /> : revealedOrigin ? <EyeOff size={15} /> : <Eye size={15} />}
+                  </button>}
                 </span>
                 <span id="origin-url-help">Use an HTTPS URL, SSH address, or local repository path.</span>
               </label>
+              {revealedOrigin && revealedOrigin.push_url !== revealedOrigin.fetch_url && <label>Push URL (revealed)<input readOnly autoComplete="off" value={revealedOrigin.push_url} /></label>}
+              {revealedOrigin && <p className="credential-token-hint">Edit the full origin URL here, then save to apply. Hiding it keeps your unsaved edits; Cancel discards them.</p>}
+              {originRevealError && <p role="alert">{originRevealError}</p>}
+              </>
             ) : prompt === "Branch" || prompt === "Tag" || prompt === "Rename" ? (
               <>
                 <label>
@@ -449,9 +496,9 @@ export function GitToolbar({
               </button>
               <button
                 className="primary"
-                disabled={busy || (prompt !== "Stash" && !value.trim()) || value.trim() === renameBranch || (prompt === "Authentication" && (!username.trim() || !token.trim()))}
+                disabled={busy || (prompt === "Origin" && (originDraft !== null ? !originDraft.trim() || originDraft.trim() === originOriginal : originEmbeddedCredentials && value.trim() === originUrl)) || (prompt !== "Stash" && !value.trim()) || value.trim() === renameBranch || (prompt === "Authentication" && (!username.trim() || !token.trim()))}
               >
-                {prompt === "Authentication" ? <><Save size={14} aria-hidden="true" /> Save authentication</> : prompt === "Publish"
+                {prompt === "Authentication" ? <><Save size={14} aria-hidden="true" /> {migratingOrigin ? "Save to Keychain & clean origin" : "Save authentication"}</> : prompt === "Publish"
                   ? <><ArrowUpCircle size={14} aria-hidden="true" /> Publish branch</>
                   : prompt === "Origin"
                   ? originUrl == null

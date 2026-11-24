@@ -2119,6 +2119,10 @@ button.image-preview-canvas:hover:not(:disabled) {
 .repository-action-field:focus-within {
   border-color: var(--accent);
 }
+.repository-action-field input:focus {
+  outline: none;
+  box-shadow: none;
+}
 .repository-action-field svg {
   flex: none;
   color: var(--accent);
@@ -2635,7 +2639,7 @@ button.image-preview-canvas:hover:not(:disabled) {
   display: grid;
   gap: 12px;
 }
-.credential-token-field {
+.credential-form .credential-token-field {
   margin-top: -7px;
 }
 .credential-token-field button {
@@ -3157,7 +3161,7 @@ button.image-preview-canvas:hover:not(:disabled) {
 }
 
 .commit-author-name { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.commit-author-inline:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.git-toolbar .commit-author-inline:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .commit-identity-symbol {
   display: grid;
   flex: none;
@@ -3420,3 +3424,13 @@ textarea,
   -webkit-user-select: none;
   user-select: none;
 }
+
+.credential-form .credential-token-hint { margin: -4px 0 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
+
+.origin-auth-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: #d5a64b; }
+.origin-auth-warning { display: flex; align-items: start; gap: 9px; padding: 12px; border: 1px solid color-mix(in srgb, #d5a64b 30%, var(--line)); border-radius: 8px; background: color-mix(in srgb, #d5a64b 6%, var(--panel)); font-size: 12px; line-height: 1.6; }
+.origin-auth-warning > svg { flex: none; margin-top: 3px; color: #d5a64b; }
+.origin-auth-warning strong { font-size: 12px; }
+.origin-auth-warning p { margin: 5px 0 10px; font-size: 11px; }
+.origin-auth-warning button { font-size: 11px; }
+.origin-auth-warning code { display: block; overflow-wrap: anywhere; font-size: 10px; color: var(--muted); }
